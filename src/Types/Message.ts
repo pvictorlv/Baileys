@@ -1,15 +1,15 @@
-import { AxiosRequestConfig } from 'axios'
-import type { Logger } from 'pino'
-import type { Readable } from 'stream'
-import type { URL } from 'url'
-import { proto } from '../../WAProto'
-import { MEDIA_HKDF_KEY_MAPPING } from '../Defaults'
-import { BinaryNode } from '../WABinary'
-import type { GroupMetadata } from './GroupMetadata'
-import { CacheStore } from './Socket'
+import {AxiosRequestConfig} from 'axios'
+import type {Logger} from 'pino'
+import type {Readable} from 'stream'
+import type {URL} from 'url'
+import {proto} from '../../WAProto'
+import {MEDIA_HKDF_KEY_MAPPING} from '../Defaults'
+import {BinaryNode} from '../WABinary'
+import type {GroupMetadata} from './GroupMetadata'
+import {CacheStore} from './Socket'
 
 // export the WAMessage Prototypes
-export { proto as WAProto }
+export {proto as WAProto}
 export type WAMessage = proto.IWebMessageInfo
 export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage
@@ -18,18 +18,32 @@ export type WAMessageKey = proto.IMessageKey
 export type WATextMessage = proto.Message.IExtendedTextMessage
 export type WAContextInfo = proto.IContextInfo
 export type WALocationMessage = proto.Message.ILocationMessage
-export type WAGenericMediaMessage = proto.Message.IVideoMessage | proto.Message.IImageMessage | proto.Message.IAudioMessage | proto.Message.IDocumentMessage | proto.Message.IStickerMessage
+export type WAGenericMediaMessage =
+    proto.Message.IVideoMessage
+    | proto.Message.IImageMessage
+    | proto.Message.IAudioMessage
+    | proto.Message.IDocumentMessage
+    | proto.Message.IStickerMessage
 // eslint-disable-next-line no-unused-vars, @typescript-eslint/no-unused-vars
 export import WAMessageStubType = proto.WebMessageInfo.StubType
 // eslint-disable-next-line no-unused-vars, @typescript-eslint/no-unused-vars
 export import WAMessageStatus = proto.WebMessageInfo.Status
+
 export type WAMediaUpload = Buffer | { url: URL | string } | { stream: Readable }
 /** Set of message types that are supported by the library */
 export type MessageType = keyof proto.Message
 
 export type DownloadableMessage = { mediaKey?: Uint8Array | null, directPath?: string | null, url?: string | null }
 
-export type MessageReceiptType = 'read' | 'read-self' | 'hist_sync' | 'peer_msg' | 'sender' | 'inactive' | 'played' | undefined
+export type MessageReceiptType =
+    'read'
+    | 'read-self'
+    | 'hist_sync'
+    | 'peer_msg'
+    | 'sender'
+    | 'inactive'
+    | 'played'
+    | undefined
 
 export type MediaConnInfo = {
     auth: string
@@ -57,6 +71,12 @@ type Buttonable = {
     /** add buttons to the message  */
     buttons?: proto.Message.ButtonsMessage.IButton[];
 };
+type Templatable = {
+    /** add buttons to the message (conflicts with normal buttons)*/
+    templateButtons?: proto.IHydratedTemplateButton[]
+
+    footer?: string
+}
 type Contextable = {
     /** add contextInfo to the message */
     contextInfo?: proto.IContextInfo
@@ -66,7 +86,7 @@ type ViewOnce = {
 }
 
 type Editable = {
-  edit?: WAMessageKey
+    edit?: WAMessageKey
 }
 type WithDimensions = {
     width?: number
@@ -92,27 +112,27 @@ type RequestPhoneNumber = {
 
 export type MediaType = keyof typeof MEDIA_HKDF_KEY_MAPPING
 export type AnyMediaMessageContent = (
-    ({
-        image: WAMediaUpload
-        caption?: string
-        jpegThumbnail?: string
-    } & Mentionable & Buttonable & Contextable & WithDimensions)
-    | ({
+        ({
+            image: WAMediaUpload
+            caption?: string
+            jpegThumbnail?: string
+        } & Mentionable & Buttonable & Templatable & Contextable & WithDimensions)
+        | ({
         video: WAMediaUpload
         caption?: string
         gifPlayback?: boolean
         jpegThumbnail?: string
         /** if set to true, will send as a `video note` */
         ptv?: boolean
-    } & Mentionable & Buttonable & Contextable & WithDimensions)
-    | {
+    } & Mentionable & Buttonable & Templatable & Contextable & WithDimensions)
+        | {
         audio: WAMediaUpload
         /** if set to true, will send as a `voice note` */
         ptt?: boolean
         /** optionally tell the duration of the audio */
         seconds?: number
     }
-    | ({
+        | ({
         sticker: WAMediaUpload
         isAnimated?: boolean
     } & WithDimensions) | ({
@@ -120,7 +140,7 @@ export type AnyMediaMessageContent = (
         mimetype: string
         fileName?: string
         caption?: string
-    } & Buttonable & Contextable))
+    } & Buttonable & Templatable & Contextable))
     & { mimetype?: string } & Editable
 
 export type ButtonReplyInfo = {
@@ -143,58 +163,58 @@ export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapsh
 
 export type AnyRegularMessageContent = (
     ({
-	    text: string
-        linkPreview?: WAUrlInfo | null
-    }
-    & Mentionable & Buttonable & Contextable & Editable)
+            text: string
+            linkPreview?: WAUrlInfo | null
+        }
+        & Mentionable & Buttonable & Templatable & Contextable & Editable)
     | AnyMediaMessageContent
     | ({
-        poll: PollMessageOptions
-    } & Mentionable & Buttonable & Contextable & Editable)
+    poll: PollMessageOptions
+} & Mentionable & Buttonable & Templatable & Contextable & Editable)
     | {
-        contacts: {
-            displayName?: string
-            contacts: proto.Message.IContactMessage[]
-        }
+    contacts: {
+        displayName?: string
+        contacts: proto.Message.IContactMessage[]
     }
+}
     | {
-        location: WALocationMessage
-    }
+    location: WALocationMessage
+}
     | { react: proto.Message.IReactionMessage }
     | {
-        buttonReply: ButtonReplyInfo
-        type: 'template' | 'plain'
-    }
+    buttonReply: ButtonReplyInfo
+    type: 'template' | 'plain'
+}
     | {
-        groupInvite: GroupInviteInfo
-    }
+    groupInvite: GroupInviteInfo
+}
     | {
-        listReply: Omit<proto.Message.IListResponseMessage, 'contextInfo'>
-    }
+    listReply: Omit<proto.Message.IListResponseMessage, 'contextInfo'>
+}
     | {
-        pin: WAMessageKey
-        type: proto.PinInChat.Type
-        /**
-         * 24 hours, 7 days, 30 days
-         */
-        time?: 86400 | 604800 | 2592000
-    }
+    pin: WAMessageKey
+    type: proto.PinInChat.Type
+    /**
+     * 24 hours, 7 days, 30 days
+     */
+    time?: 86400 | 604800 | 2592000
+}
     | {
-        product: WASendableProduct
-        businessOwnerJid?: string
-        body?: string
-        footer?: string
-    } | SharePhoneNumber | RequestPhoneNumber
-) & ViewOnce
+    product: WASendableProduct
+    businessOwnerJid?: string
+    body?: string
+    footer?: string
+} | SharePhoneNumber | RequestPhoneNumber
+    ) & ViewOnce
 
 export type AnyMessageContent = AnyRegularMessageContent | {
-	forward: WAMessage
-	force?: boolean
+    forward: WAMessage
+    force?: boolean
 } | {
     /** Delete your message or anyone's message in a group (admin required) */
-	delete: WAMessageKey
+    delete: WAMessageKey
 } | {
-	disappearingMessagesInChat: boolean | number
+    disappearingMessagesInChat: boolean | number
 }
 
 export type GroupMetadataParticipants = Pick<GroupMetadata, 'participants'>
@@ -220,9 +240,9 @@ export type MessageRelayOptions = MinimalRelayOptions & {
 
 export type MiscMessageGenerationOptions = MinimalRelayOptions & {
     /** optional, if you want to manually set the timestamp of the message */
-	timestamp?: Date
+    timestamp?: Date
     /** the message you want to quote */
-	quoted?: WAMessage
+    quoted?: WAMessage
     /** disappearing messages settings */
     ephemeralExpiration?: number | string
     /** timeout for media upload to WA server */
@@ -237,13 +257,17 @@ export type MiscMessageGenerationOptions = MinimalRelayOptions & {
     broadcast?: boolean
 }
 export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions & {
-	userJid: string
+    userJid: string
 }
 
-export type WAMediaUploadFunction = (readStream: Readable, opts: { fileEncSha256B64: string, mediaType: MediaType, timeoutMs?: number }) => Promise<{ mediaUrl: string, directPath: string }>
+export type WAMediaUploadFunction = (readStream: Readable, opts: {
+    fileEncSha256B64: string,
+    mediaType: MediaType,
+    timeoutMs?: number
+}) => Promise<{ mediaUrl: string, directPath: string }>
 
 export type MediaGenerationOptions = {
-	logger?: Logger
+    logger?: Logger
     mediaTypeOverride?: MediaType
     upload: WAMediaUploadFunction
     /** cache media so it does not have to be uploaded again */
@@ -258,7 +282,7 @@ export type MediaGenerationOptions = {
     font?: number
 }
 export type MessageContentGenerationOptions = MediaGenerationOptions & {
-	getUrlInfo?: (text: string) => Promise<WAUrlInfo | undefined>
+    getUrlInfo?: (text: string) => Promise<WAUrlInfo | undefined>
     getProfilePicUrl?: (jid: string, type: 'image' | 'preview') => Promise<string | undefined>
 }
 export type MessageGenerationOptions = MessageContentGenerationOptions & MessageGenerationOptionsFromContent
