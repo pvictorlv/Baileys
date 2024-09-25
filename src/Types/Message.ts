@@ -53,6 +53,10 @@ type Mentionable = {
     /** list of jids that are mentioned in the accompanying text */
     mentions?: string[]
 }
+type Buttonable = {
+    /** add buttons to the message  */
+    buttons?: proto.Message.ButtonsMessage.IButton[];
+};
 type Contextable = {
     /** add contextInfo to the message */
     contextInfo?: proto.IContextInfo
@@ -92,7 +96,7 @@ export type AnyMediaMessageContent = (
         image: WAMediaUpload
         caption?: string
         jpegThumbnail?: string
-    } & Mentionable & Contextable & WithDimensions)
+    } & Mentionable & Buttonable & Contextable & WithDimensions)
     | ({
         video: WAMediaUpload
         caption?: string
@@ -100,7 +104,7 @@ export type AnyMediaMessageContent = (
         jpegThumbnail?: string
         /** if set to true, will send as a `video note` */
         ptv?: boolean
-    } & Mentionable & Contextable & WithDimensions)
+    } & Mentionable & Buttonable & Contextable & WithDimensions)
     | {
         audio: WAMediaUpload
         /** if set to true, will send as a `voice note` */
@@ -116,7 +120,7 @@ export type AnyMediaMessageContent = (
         mimetype: string
         fileName?: string
         caption?: string
-    } & Contextable))
+    } & Buttonable & Contextable))
     & { mimetype?: string } & Editable
 
 export type ButtonReplyInfo = {
@@ -142,11 +146,11 @@ export type AnyRegularMessageContent = (
 	    text: string
         linkPreview?: WAUrlInfo | null
     }
-    & Mentionable & Contextable & Editable)
+    & Mentionable & Buttonable & Contextable & Editable)
     | AnyMediaMessageContent
     | ({
         poll: PollMessageOptions
-    } & Mentionable & Contextable & Editable)
+    } & Mentionable & Buttonable & Contextable & Editable)
     | {
         contacts: {
             displayName?: string
