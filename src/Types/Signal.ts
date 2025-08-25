@@ -1,9 +1,16 @@
 import { proto } from '../../WAProto'
+import {LIDMappingStore} from "../Signal/lid-mapping";
 
 type DecryptGroupSignalOpts = {
 	group: string
 	authorJid: string
 	msg: Uint8Array
+}
+
+type EncryptMessageWithWireOpts = {
+	encryptionJid: string // JID used for session lookup (LID)
+	wireJid: string // JID used for envelope (PN)
+	data: Uint8Array
 }
 
 type ProcessSenderKeyDistributionMessageOpts = {
@@ -57,10 +64,21 @@ export type SignalRepository = {
 		type: 'pkmsg' | 'msg'
 		ciphertext: Uint8Array
 	}>
+	encryptMessageWithWire(opts: EncryptMessageWithWireOpts): Promise<{
+		type: 'pkmsg' | 'msg'
+		ciphertext: Uint8Array
+		wireJid: string // Return the wire JID for envelope
+	}>
 	encryptGroupMessage(opts: EncryptGroupMessageOpts): Promise<{
 		senderKeyDistributionMessage: Uint8Array
 		ciphertext: Uint8Array
 	}>
 	injectE2ESession(opts: E2ESessionOpts): Promise<void>
 	jidToSignalProtocolAddress(jid: string): string
+	storeLIDPNMapping(lid: string, pn: string): Promise<void>
+	getLIDMappingStore(): LIDMappingStore
+	migrateSession(fromJid: string, toJid: string): Promise<void>
+	validateSession(jid: string): Promise<{ exists: boolean; reason?: string }>
+	deleteSession(jid: string): Promise<void>
+	destroy(): void
 }

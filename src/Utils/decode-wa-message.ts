@@ -10,7 +10,7 @@ import {
 	isJidNewsletter,
 	isJidStatusBroadcast,
 	isJidUser,
-	isLidUser
+	isLidUser, jidDecode, jidEncode, jidNormalizedUser
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
 import { ILogger } from './logger'
@@ -115,6 +115,44 @@ export interface SessionRecreationContext {
 	logger: any
 	signalRepository: any
 	query: (node: BinaryNode) => Promise<BinaryNode>
+}
+
+
+const getDecryptionJid = async (sender: string, repository: SignalRepository): Promise<string> => {
+	if (!sender.includes('@s.whatsapp.net')) {
+		return sender
+	}
+
+	const lidMapping = repository.getLIDMappingStore()
+	const normalizedSender = jidNormalizedUser(sender)
+	const lidForPN = await lidMapping.getLIDForPN(normalizedSender)
+
+	if (lidForPN?.includes('@lid')) {
+		const senderDecoded = jidDecode(sender)
+		const deviceId = senderDecoded?.device || 0
+		return jidEncode(jidDecode(lidForPN)!.user, 'lid', deviceId)
+	}
+
+	return sender
+}
+
+const storeMappingFromEnvelope = async (
+	stanza: BinaryNode,
+	sender: string,
+	decryptionJid: string,
+	repository: SignalRepository,
+	logger: ILogger
+): Promise<void> => {
+	const { senderAlt } = extractAddressingContext(stanza)
+
+	if (senderAlt && isLidUser(senderAlt) && isJidUser(sender) && decryptionJid === sender) {
+		try {
+			await repository.storeLIDPNMapping(senderAlt, sender)
+			logger.debug({ sender, senderAlt }, 'Stored LID mapping from envelope')
+		} catch (error) {
+			logger.warn({ sender, senderAlt, error }, 'Failed to store LID mapping')
+		}
+	}
 }
 
 // Smart retry control functions (inspired by whatsmeow)
@@ -342,6 +380,28 @@ type MessageType =
 	| 'other_status'
 	| 'newsletter'
 
+export const extractAddressingContext = (stanza: BinaryNode) => {
+	const addressingMode = stanza.attrs.addressing_mode || 'pn'
+	let senderAlt: string | undefined
+	let recipientAlt: string | undefined
+
+	if (addressingMode === 'lid') {
+		// Message is LID-addressed: sender is LID, extract corresponding PN
+		senderAlt = stanza.attrs.participant_pn || stanza.attrs.sender_pn
+		recipientAlt = stanza.attrs.recipient_pn
+	} else {
+		// Message is PN-addressed: sender is PN, extract corresponding LID
+		senderAlt = stanza.attrs.participant_lid || stanza.attrs.sender_lid
+		recipientAlt = stanza.attrs.recipient_lid
+	}
+
+	return {
+		addressingMode,
+		senderAlt,
+		recipientAlt
+	}
+}
+
 /**
  * Decode the received node as a message.
  * @note this will only parse the message, not decrypt it
@@ -494,11 +554,14 @@ export const decryptMessageNode = (
 										case 'pkmsg':
 										case 'msg':
 											const user = isJidUser(sender) ? sender : author
-											return await repository.decryptMessage({
-												jid: user,
+											const decryptionJid = await getDecryptionJid(user, repository)
+											const msg = await repository.decryptMessage({
+												jid: decryptionJid,
 												type: e2eType,
 												ciphertext: content
 											})
+											await storeMappingFromEnvelope(stanza, user, decryptionJid, repository, logger)
+											return msg;
 										default:
 											throw new Error(`Unknown e2e type: ${e2eType}`)
 									}
