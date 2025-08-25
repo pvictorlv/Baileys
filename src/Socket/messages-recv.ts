@@ -933,7 +933,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 						// Add to recent messages cache for retry receipts (whatsmeow pattern)
 						if (msg.key?.remoteJid && msg.key?.id) {
-							addRecentMessage(msg.key.remoteJid, msg.key.id, msg)
+							addRecentMessage(msg.key.remoteJid, msg.key.id, msg.message!)
 							logger.debug({ 
 								jid: msg.key.remoteJid, 
 								id: msg.key.id 
