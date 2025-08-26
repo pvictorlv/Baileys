@@ -144,7 +144,7 @@ const incomingRetryRequestCounter = new Map<string, number>()
 export interface SessionRecreationContext {
 	authState: any
 	logger: any
-	signalRepository: any
+	signalRepository: SignalRepository
 	query: (node: BinaryNode) => Promise<BinaryNode>
 }
 
