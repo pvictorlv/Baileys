@@ -19,7 +19,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 	const recentMigrations = new LRUCache<string, boolean>({
 		ttl: 5 * 60 * 1000,
 		updateAgeOnGet: true,
-		max: 9999
+		ttlAutopurge: true,
 	})
 
 	function isLikelySyncMessage(addr): boolean {
@@ -81,18 +81,43 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 			async function doDecrypt(): Promise<Buffer> {
 				let result: Buffer
-				switch (type) {
-					case 'pkmsg':
-						result = await session.decryptPreKeyWhisperMessage(ciphertext)
-						break
-					case 'msg':
-						result = await session.decryptWhisperMessage(ciphertext)
-						break
+				try {
+					switch (type) {
+						case 'pkmsg':
+							result = await session.decryptPreKeyWhisperMessage(ciphertext)
+							break
+						case 'msg':
+							result = await session.decryptWhisperMessage(ciphertext)
+							break
+					}
+					return result
+				} catch (error) {
+					// Enhanced error handling for PreKey and session issues (WhatsApp Meow inspired)
+					const errorMessage = error.message || error.toString()
+					
+					// Check for specific PreKey errors that indicate we need new prekeys
+					if (errorMessage.includes('PreKey') || errorMessage.includes('Invalid PreKey ID')) {
+						// This is a PreKey error - we need to request new prekeys
+						throw new Error(`PreKeyError: ${errorMessage}`)
+					}
+					
+					// Check for session-related errors
+					if (errorMessage.includes('No session') || errorMessage.includes('Session') || 
+						errorMessage.includes('Bad MAC') || errorMessage.includes('MAC verification')) {
+						// This is a session error - session might be corrupted or missing
+						throw new Error(`SessionError: ${errorMessage}`)
+					}
+					
+					// Check for identity key errors
+					if (errorMessage.includes('Untrusted') || errorMessage.includes('Identity')) {
+						// This is an identity error - identity key might have changed
+						throw new Error(`IdentityError: ${errorMessage}`)
+					}
+					
+					// Re-throw original error if it's not a known recoverable type
+					throw error
 				}
-
-				return result
 			}
-
 
 			if (isLikelySyncMessage(addr)) {
 				// If it's a sync message, we can skip the transaction and recovery
