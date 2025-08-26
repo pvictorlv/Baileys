@@ -36,6 +36,7 @@ export const DECRYPTION_RETRY_CONFIG = {
 		'Signature verification failed'
 	],
 	macErrors: ['Bad MAC', 'MAC verification failed', 'Bad MAC Error', 'Decryption failed'],
+	prekeyErrors: ['Invalid PreKey ID', 'PreKey not found', 'Invalid PreKey', 'PreKey ID not found'],
 	allRecoverableErrors: [
 		'No session record',
 		'Session record not found',
@@ -48,7 +49,11 @@ export const DECRYPTION_RETRY_CONFIG = {
 		'No matching sessions found for message',
 		'No SenderKeyRecord found',
 		'Signature verification failed',
-		'Decryption failed'
+		'Decryption failed',
+		'Invalid PreKey ID',
+		'PreKey not found',
+		'Invalid PreKey',
+		'PreKey ID not found'
 	]
 }
 
@@ -66,6 +71,10 @@ const sessionRecreateHistory = new Map<string, number>()
 // Session recreation history lock for thread safety (whatsmeow-inspired)
 let sessionRecreateHistoryLock = false
 const sessionRecreateHistoryQueue: (() => void)[] = []
+
+// Decryption mutex per JID to prevent race conditions (whatsmeow-inspired)
+const decryptionMutexes = new Map<string, Promise<void>>()
+const decryptionMutexResolvers = new Map<string, () => void>()
 
 async function acquireSessionRecreateHistoryLock(): Promise<void> {
 	return new Promise((resolve) => {
@@ -86,6 +95,28 @@ function releaseSessionRecreateHistoryLock(): void {
 	const next = sessionRecreateHistoryQueue.shift()
 	if (next) {
 		next()
+	}
+}
+
+// Decryption mutex functions to prevent race conditions
+async function acquireDecryptionMutex(jid: string): Promise<() => void> {
+	const existingMutex = decryptionMutexes.get(jid)
+	if (existingMutex) {
+		await existingMutex
+	}
+	
+	let resolver: () => void
+	const mutex = new Promise<void>((resolve) => {
+		resolver = resolve
+	})
+	
+	decryptionMutexes.set(jid, mutex)
+	decryptionMutexResolvers.set(jid, resolver!)
+	
+	return () => {
+		decryptionMutexes.delete(jid)
+		decryptionMutexResolvers.delete(jid)
+		resolver!()
 	}
 }
 
@@ -650,6 +681,14 @@ export function isSessionRecordError(error: any): boolean {
 }
 
 /**
+ * Utility function to check if an error is related to prekey issues
+ */
+export function isPreKeyError(error: any): boolean {
+	const errorMessage = error?.message || error?.toString() || ''
+	return DECRYPTION_RETRY_CONFIG.prekeyErrors.some(errorPattern => errorMessage.includes(errorPattern))
+}
+
+/**
  * Sleep utility for retry delays
  */
 function sleep(ms: number): Promise<void> {
@@ -670,6 +709,7 @@ async function decryptWithRetry(
 ): Promise<Uint8Array> {
 	let lastError: any
 	const messageKeyStr = `${messageKey.remoteJid}_${messageKey.id}_${messageKey.participant || ''}`
+	const senderJid = messageKey.participant || messageKey.remoteJid || ''
 	
 	// Check if we should stop retrying based on previous attempts
 	if (shouldStopRetrying(messageKeyStr)) {
@@ -677,13 +717,17 @@ async function decryptWithRetry(
 		throw new Error('Maximum retry attempts exceeded for message')
 	}
 
+	// Acquire decryption mutex to prevent race conditions (whatsmeow-inspired)
+	const releaseMutex = await acquireDecryptionMutex(senderJid)
+
 	for (let attempt = 0; attempt <= DECRYPTION_RETRY_CONFIG.maxRetries; attempt++) {
 		try {
 			const result = await decryptFn()
-			// Success - clean up retry state if it exists
+			// Success - clean up retry state if it exists and release mutex
 			if (messageRetryStates.has(messageKeyStr)) {
 				messageRetryStates.delete(messageKeyStr)
 			}
+			releaseMutex()
 			return result
 		} catch (error) {
 			lastError = error
@@ -707,7 +751,9 @@ async function decryptWithRetry(
 			const delay = DECRYPTION_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt)
 
 			// Enhanced logging with error type classification
-			const errorType = isMacError(error) ? 'MAC' : isSessionRecordError(error) ? 'Session Record' : 'Other Recoverable'
+			const errorType = isMacError(error) ? 'MAC' : 
+				isSessionRecordError(error) ? 'Session Record' : 
+				isPreKeyError(error) ? 'PreKey' : 'Other Recoverable'
 
 			logger.warn(
 				{
@@ -769,8 +815,8 @@ async function decryptWithRetry(
 			// This is more efficient than waiting for the full message processing
 			if (node && sendRetryRequestFn && currentRetryCount <= 2) {
 				try {
-					// Force include keys on first retry, MAC errors, session errors, or when session recreation is needed
-					const forceIncludeKeys = isSessionRecordError(error) || isMacError(error) || recreate || currentRetryCount > 1
+					// Force include keys on first retry, MAC errors, session errors, prekey errors, or when session recreation is needed
+					const forceIncludeKeys = isSessionRecordError(error) || isMacError(error) || isPreKeyError(error) || recreate || currentRetryCount > 1
 					await sendRetryRequestFn(node, forceIncludeKeys)
 					logger.debug({
 						key: messageKey,
@@ -792,6 +838,7 @@ async function decryptWithRetry(
 		}
 	}
 
-	// If all retries failed, throw the last error
+	// If all retries failed, release mutex and throw the last error
+	releaseMutex()
 	throw lastError
 }

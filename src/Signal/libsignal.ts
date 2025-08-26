@@ -204,6 +204,15 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				return { exists: false, reason: 'validation error' }
 			}
 		},
+		async hasSession(jid: string) {
+			try {
+				const addr = jidToSignalProtocolAddress(jid)
+				const session = await storage.loadSession(addr.toString())
+				return session !== null && session.haveOpenSession()
+			} catch (error) {
+				return false
+			}
+		},
 		async deleteSession(jid: string) {
 			const addr = jidToSignalProtocolAddress(jid)
 
