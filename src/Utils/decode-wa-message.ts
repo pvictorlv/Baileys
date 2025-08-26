@@ -15,7 +15,6 @@ import {
 import { unpadRandomMax16 } from './generics'
 import { ILogger } from './logger'
 import { fetchPreKeys } from './signal'
-import { simpleDecryptWithRetry } from './whatsmeow-simple-decrypt'
 
 export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
 export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
@@ -24,10 +23,8 @@ export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
 export const DECRYPTION_RETRY_CONFIG = {
 	maxRetries: 5, // Maximum retry attempts (same as whatsmeow)
 	baseDelayMs: 100,
-	maxDelayMs: 2000, // Maximum delay between retries
 	sessionRecreateTimeout: 60 * 60 * 1000, // 1 hour timeout for session recreation
 	requestFromPhoneDelay: 5000, // 5 seconds delay before requesting from phone
-	internalRetryLimit: 10, // Maximum internal retry counter per sender/message (whatsmeow pattern)
 	sessionRecordErrors: [
 		'No session record',
 		'Session record not found',
@@ -36,8 +33,7 @@ export const DECRYPTION_RETRY_CONFIG = {
 		'No matching sessions',
 		'No session found',
 		'No SenderKeyRecord found',
-		'Signature verification failed',
-		'Session not found'
+		'Signature verification failed'
 	],
 	macErrors: ['Bad MAC', 'MAC verification failed', 'Bad MAC Error', 'Decryption failed'],
 	allRecoverableErrors: [
@@ -52,8 +48,7 @@ export const DECRYPTION_RETRY_CONFIG = {
 		'No matching sessions found for message',
 		'No SenderKeyRecord found',
 		'Signature verification failed',
-		'Decryption failed',
-		'Session not found'
+		'Decryption failed'
 	]
 }
 
@@ -330,16 +325,10 @@ export function cleanupOldRetryStates(): void {
 	const now = Date.now()
 	const maxAge = 24 * 60 * 60 * 1000 // 24 hours
 	
-	let cleanedStates = 0
-	let cleanedHistory = 0
-	let cleanedMessages = 0
-	let cleanedCounters = 0
-	
 	// Clean up old message retry states
 	for (const [key, state] of messageRetryStates.entries()) {
 		if (now - state.lastRetryTime > maxAge) {
 			messageRetryStates.delete(key)
-			cleanedStates++
 		}
 	}
 	
@@ -347,7 +336,6 @@ export function cleanupOldRetryStates(): void {
 	for (const [jid, timestamp] of sessionRecreateHistory.entries()) {
 		if (now - timestamp > maxAge) {
 			sessionRecreateHistory.delete(jid)
-			cleanedHistory++
 		}
 	}
 	
@@ -355,7 +343,6 @@ export function cleanupOldRetryStates(): void {
 	for (const [key, recentMsg] of recentMessagesMap.entries()) {
 		if (now - recentMsg.timestamp > maxAge) {
 			recentMessagesMap.delete(key)
-			cleanedMessages++
 		}
 	}
 	
@@ -364,56 +351,7 @@ export function cleanupOldRetryStates(): void {
 		// Clean up counters older than 1 hour
 		if (Math.random() < 0.1) { // Probabilistic cleanup to avoid performance issues
 			incomingRetryRequestCounter.delete(key)
-			cleanedCounters++
 		}
-	}
-	
-	// Log cleanup statistics if any cleanup was performed
-	if (cleanedStates > 0 || cleanedHistory > 0 || cleanedMessages > 0 || cleanedCounters > 0) {
-		console.debug({
-			cleanedStates,
-			cleanedHistory,
-			cleanedMessages,
-			cleanedCounters,
-			remainingStates: messageRetryStates.size,
-			remainingHistory: sessionRecreateHistory.size,
-			remainingMessages: recentMessagesMap.size,
-			remainingCounters: incomingRetryRequestCounter.size
-		}, 'Cleaned up old retry states')
-	}
-}
-
-/**
- * Get retry statistics for monitoring and debugging
- */
-export function getRetryStatistics(): {
-	activeRetryStates: number
-	sessionRecreateHistory: number
-	recentMessages: number
-	incomingRetryCounters: number
-	oldestRetryState?: number
-	newestRetryState?: number
-} {
-	const now = Date.now()
-	let oldestRetryTime = now
-	let newestRetryTime = 0
-	
-	for (const state of messageRetryStates.values()) {
-		if (state.lastRetryTime < oldestRetryTime) {
-			oldestRetryTime = state.lastRetryTime
-		}
-		if (state.lastRetryTime > newestRetryTime) {
-			newestRetryTime = state.lastRetryTime
-		}
-	}
-	
-	return {
-		activeRetryStates: messageRetryStates.size,
-		sessionRecreateHistory: sessionRecreateHistory.size,
-		recentMessages: recentMessagesMap.size,
-		incomingRetryCounters: incomingRetryRequestCounter.size,
-		oldestRetryState: messageRetryStates.size > 0 ? now - oldestRetryTime : undefined,
-		newestRetryState: messageRetryStates.size > 0 ? now - newestRetryTime : undefined
 	}
 }
 
@@ -604,49 +542,7 @@ export const decryptMessageNode = (
 								signalRepository: repository
 							} : undefined
 							
-							// Create PreKey handling functions for WhatsApp Meow pattern
-							const user = isJidUser(sender) ? sender : author
-							const decryptionJid = await getDecryptionJid(user, repository)
-							
-							const createFetchPreKeysFn = (targetJid: string) => async (jid: string): Promise<boolean> => {
-								try {
-									return await fetchPreKeys(
-										[jid],
-										sessionContext?.query || (() => Promise.reject(new Error('No query function available'))),
-										repository,
-										logger
-									)
-								} catch (error) {
-									logger.warn({
-										jid,
-										error: error.message
-									}, 'Failed to fetch PreKeys')
-									return false
-								}
-							}
-							
-							const createRecreateSessionFn = (targetJid: string) => async (jid: string): Promise<boolean> => {
-								try {
-									// WhatsApp Meow pattern: Delete existing session and let it be recreated
-									const signalId = repository.jidToSignalProtocolAddress(jid)
-									await sessionContext?.authState?.keys?.set?.({ 'session': { [signalId]: null } })
-									
-									logger.debug({
-										jid,
-										signalId
-									}, 'Cleared session for recreation')
-									
-									return true
-								} catch (error) {
-									logger.warn({
-										jid,
-										error: error.message
-									}, 'Failed to recreate session')
-									return false
-								}
-							}
-							
-							msgBuffer = await simpleDecryptWithRetry(
+							msgBuffer = await decryptWithRetry(
 								async () => {
 									switch (e2eType) {
 										case 'skmsg':
@@ -657,6 +553,8 @@ export const decryptMessageNode = (
 											})
 										case 'pkmsg':
 										case 'msg':
+											const user = isJidUser(sender) ? sender : author
+											const decryptionJid = await getDecryptionJid(user, repository)
 											const msg = await repository.decryptMessage({
 												jid: decryptionJid,
 												type: e2eType,
@@ -673,8 +571,7 @@ export const decryptMessageNode = (
 								e2eType,
 								stanza,
 								sendRetryRequestFn,
-								createFetchPreKeysFn(decryptionJid),
-								createRecreateSessionFn(decryptionJid)
+								contextWithRepo
 							)
 						} else {
 							msgBuffer = content
@@ -729,17 +626,10 @@ export const decryptMessageNode = (
 }
 
 /**
- * Utility function to check if an error is recoverable (WhatsApp Meow inspired)
+ * Utility function to check if an error is recoverable (session record or MAC errors)
  */
 export function isRecoverableDecryptionError(error: any): boolean {
 	const errorMessage = error?.message || error?.toString() || ''
-	
-	// Check for our enhanced error types first
-	if (isPreKeyError(error) || isIdentityError(error) || isMacError(error) || isSessionRecordError(error)) {
-		return true
-	}
-	
-	// Fallback to original pattern matching
 	return DECRYPTION_RETRY_CONFIG.allRecoverableErrors.some(errorPattern => errorMessage.includes(errorPattern))
 }
 
@@ -760,102 +650,6 @@ export function isSessionRecordError(error: any): boolean {
 }
 
 /**
- * Utility function to check if an error is related to PreKey issues (WhatsApp Meow inspired)
- */
-export function isPreKeyError(error: any): boolean {
-	const errorMessage = error?.message || error?.toString() || ''
-	return errorMessage.includes('PreKeyError:') || errorMessage.includes('PreKey') || errorMessage.includes('Invalid PreKey ID')
-}
-
-/**
- * Utility function to check if an error is related to Identity issues (WhatsApp Meow inspired)
- */
-export function isIdentityError(error: any): boolean {
-	const errorMessage = error?.message || error?.toString() || ''
-	return errorMessage.includes('IdentityError:') || errorMessage.includes('Untrusted') || errorMessage.includes('Identity')
-}
-
-/**
- * Enhanced error analysis for better retry decisions (whatsmeow-inspired)
- */
-export function analyzeDecryptionError(error: any): {
-	type: 'PREKEY' | 'IDENTITY' | 'MAC' | 'SESSION_RECORD' | 'SIGNATURE' | 'OTHER_RECOVERABLE' | 'NON_RECOVERABLE'
-	shouldRecreateSession: boolean
-	shouldIncludeKeys: boolean
-	priority: number // Higher priority = more urgent
-} {
-	const errorMessage = error?.message || error?.toString() || ''
-	
-	// PreKey errors - highest priority, always include keys (WhatsApp Meow pattern)
-	if (isPreKeyError(error)) {
-		return {
-			type: 'PREKEY',
-			shouldRecreateSession: true,
-			shouldIncludeKeys: true,
-			priority: 11
-		}
-	}
-	
-	// Identity errors - very high priority, need identity refresh (WhatsApp Meow pattern)
-	if (isIdentityError(error)) {
-		return {
-			type: 'IDENTITY',
-			shouldRecreateSession: true,
-			shouldIncludeKeys: true,
-			priority: 10
-		}
-	}
-	
-	// MAC errors - high priority, always recreate session and include keys
-	if (isMacError(error)) {
-		return {
-			type: 'MAC',
-			shouldRecreateSession: true,
-			shouldIncludeKeys: true,
-			priority: 9
-		}
-	}
-	
-	// Session record errors - high priority, recreate session and include keys
-	if (isSessionRecordError(error)) {
-		return {
-			type: 'SESSION_RECORD',
-			shouldRecreateSession: true,
-			shouldIncludeKeys: true,
-			priority: 8
-		}
-	}
-	
-	// Signature verification errors - medium priority
-	if (errorMessage.includes('Signature verification failed') || errorMessage.includes('signature')) {
-		return {
-			type: 'SIGNATURE',
-			shouldRecreateSession: true,
-			shouldIncludeKeys: true,
-			priority: 7
-		}
-	}
-	
-	// Other recoverable errors - lower priority
-	if (isRecoverableDecryptionError(error)) {
-		return {
-			type: 'OTHER_RECOVERABLE',
-			shouldRecreateSession: false,
-			shouldIncludeKeys: false,
-			priority: 5
-		}
-	}
-	
-	// Non-recoverable errors
-	return {
-		type: 'NON_RECOVERABLE',
-		shouldRecreateSession: false,
-		shouldIncludeKeys: false,
-		priority: 0
-	}
-}
-
-/**
  * Sleep utility for retry delays
  */
 function sleep(ms: number): Promise<void> {
@@ -864,10 +658,6 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Decrypt a single message with retry logic for recoverable errors (inspired by whatsmeow)
- */
-/**
- * @deprecated This function is replaced by simpleDecryptWithRetry (WhatsApp Meow pattern)
- * Keeping for compatibility but not used in new code
  */
 async function decryptWithRetry(
 	decryptFn: () => Promise<Uint8Array>,
@@ -881,8 +671,11 @@ async function decryptWithRetry(
 	let lastError: any
 	const messageKeyStr = `${messageKey.remoteJid}_${messageKey.id}_${messageKey.participant || ''}`
 	
-	// WhatsApp Meow pattern: No complex retry state tracking
-	// Simply try once and send retry request if it fails
+	// Check if we should stop retrying based on previous attempts
+	if (shouldStopRetrying(messageKeyStr)) {
+		logger.warn({ key: messageKey }, 'Message has exceeded maximum retry attempts, not retrying')
+		throw new Error('Maximum retry attempts exceeded for message')
+	}
 
 	for (let attempt = 0; attempt <= DECRYPTION_RETRY_CONFIG.maxRetries; attempt++) {
 		try {
@@ -910,11 +703,8 @@ async function decryptWithRetry(
 				break
 			}
 
-			// Calculate delay with exponential backoff, capped at maxDelayMs
-			const delay = Math.min(
-				DECRYPTION_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt),
-				DECRYPTION_RETRY_CONFIG.maxDelayMs
-			)
+			// Calculate delay with exponential backoff
+			const delay = DECRYPTION_RETRY_CONFIG.baseDelayMs * Math.pow(2, attempt)
 
 			// Enhanced logging with error type classification
 			const errorType = isMacError(error) ? 'MAC' : isSessionRecordError(error) ? 'Session Record' : 'Other Recoverable'
@@ -929,7 +719,7 @@ async function decryptWithRetry(
 					messageType,
 					delayMs: delay
 				},
-				`${errorType} error detected, retrying decryption (attempt ${currentRetryCount}/${DECRYPTION_RETRY_CONFIG.maxRetries})`
+				`${errorType} error detected, retrying decryption`
 			)
 
 			// Check if we should recreate session (whatsmeow-inspired logic)

@@ -84,15 +84,12 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		sendPeerDataOperationMessage
 	} = sock
 
-	// WhatsApp Meow inspired message processing state management
 	const PENDING_MESSAGE_DECRYPTIONS = new Map<
 		string,
 		{
 			node: BinaryNode
 			retryCount: number
 			timestamp: number
-			processing: boolean // Track if message is currently being processed
-			lastError?: string // Track last error for debugging
 		}
 	>()
 	const MAX_DECRYPT_RETRY_COUNT = 3
@@ -100,199 +97,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	/** this mutex ensures that each retryRequest will wait for the previous one to finish */
 	const retryMutex = makeMutex()
-	
-	// Per-message processing mutexes to prevent race conditions (WhatsApp Meow pattern)
-	const messageProcessingMutexes = new Map<string, ReturnType<typeof makeMutex>>()
-	
-	// Get or create a mutex for a specific message to prevent concurrent processing
-	const getMessageMutex = (messageKey: string): ReturnType<typeof makeMutex> => {
-		if (!messageProcessingMutexes.has(messageKey)) {
-			messageProcessingMutexes.set(messageKey, makeMutex())
-		}
-		return messageProcessingMutexes.get(messageKey)!
-	}
-	
-	// Periodic cleanup of old mutexes and retry states (WhatsApp Meow pattern)
-	const cleanupInterval = setInterval(() => {
-		cleanupMessageMutexes()
-		
-		// Also cleanup old pending decryptions
-		const now = Date.now()
-		const oldKeys: string[] = []
-		
-		for (const [key, state] of PENDING_MESSAGE_DECRYPTIONS) {
-			// Remove entries older than 30 minutes
-			if ((now - state.timestamp) > 30 * 60 * 1000) {
-				oldKeys.push(key)
-			}
-		}
-		
-		for (const key of oldKeys) {
-			PENDING_MESSAGE_DECRYPTIONS.delete(key)
-			logger.debug({ messageKey: key }, 'Cleaned up old pending decryption state')
-		}
-	}, 5 * 60 * 1000) // Run every 5 minutes
-	
-	// Clean up old mutexes to prevent memory leaks
-	const cleanupMessageMutexes = () => {
-		const now = Date.now()
-		const oldKeys: string[] = []
-		
-		for (const [key] of messageProcessingMutexes) {
-			// Remove mutexes for messages older than 1 hour
-			const [, , timestamp] = key.split('_')
-			if (timestamp && (now - parseInt(timestamp)) > 60 * 60 * 1000) {
-				oldKeys.push(key)
-			}
-		}
-		
-		for (const key of oldKeys) {
-			messageProcessingMutexes.delete(key)
-		}
-	}
-	
-	// Handle successful message decryption (WhatsApp Meow pattern)
-	const handleSuccessfulDecryption = async (msg: proto.IWebMessageInfo, category: string, author: string) => {
-		let type: MessageReceiptType = undefined
-		let participant = msg.key.participant
-		if (category === 'peer') {
-			type = 'peer_msg'
-		} else if (msg.key.fromMe) {
-			type = 'sender'
-			if (isJidUser(msg.key.remoteJid!)) {
-				participant = author
-			}
-		} else if (!sendActiveReceipts) {
-			type = 'inactive'
-		}
-
-		await sendReceipt(msg.key.remoteJid!, participant!, [msg.key.id!], type)
-
-		const isAnyHistoryMsg = getHistoryMsg(msg.message!)
-		if (isAnyHistoryMsg) {
-			const jid = jidNormalizedUser(msg.key.remoteJid!)
-			await sendReceipt(jid, undefined, [msg.key.id!], 'hist_sync')
-		}
-	}
-	
-	// Handle decryption failure (WhatsApp Meow pattern)
-	const handleDecryptionFailure = async (messageKey: string, node: BinaryNode, msg: proto.IWebMessageInfo) => {
-		await retryMutex.mutex(async () => {
-			if (ws.isOpen) {
-				if (getBinaryNodeChild(node, 'unavailable')) {
-					return
-				}
-
-				const encNode = getBinaryNodeChild(node, 'enc')
-				logger.warn({ messageKey, node: { from: node.attrs.from, id: node.attrs.id } }, 'Message decryption failed, sending retry request')
-				
-				await sendRetryRequest(node, !encNode)
-				if (retryRequestDelayMs) {
-					await delay(retryRequestDelayMs)
-				}
-			} else {
-				logger.debug({ node }, 'connection closed, ignoring retry req')
-			}
-		})
-	}
-	
-	// Handle decryption error with proper retry logic (WhatsApp Meow inspired)
-	const handleDecryptionError = async (messageKey: string, node: BinaryNode, error: any) => {
-		// Enhanced error classification based on our improved error handling
-		const errorMessage = error.message || error.toString()
-		const isPreKeyError = errorMessage.includes('PreKeyError:') || errorMessage.includes('PreKey') || errorMessage.includes('Invalid PreKey ID')
-		const isSessionError = errorMessage.includes('SessionError:') || errorMessage.includes('Session') || errorMessage.includes('No session')
-		const isMacError = errorMessage.includes('MAC') || errorMessage.includes('Bad MAC')
-		const isIdentityError = errorMessage.includes('IdentityError:') || errorMessage.includes('Untrusted') || errorMessage.includes('Identity')
-		
-		// Add to retry queue if not already there
-		if (!PENDING_MESSAGE_DECRYPTIONS.has(messageKey)) {
-			PENDING_MESSAGE_DECRYPTIONS.set(messageKey, {
-				node,
-				retryCount: 0,
-				timestamp: Date.now(),
-				processing: false,
-				lastError: errorMessage
-			})
-		}
-
-		const pendingDecryption = PENDING_MESSAGE_DECRYPTIONS.get(messageKey)!
-		pendingDecryption.retryCount++
-		pendingDecryption.lastError = errorMessage
-
-		if (pendingDecryption.retryCount <= MAX_DECRYPT_RETRY_COUNT) {
-			logger.warn({ 
-				messageKey, 
-				retryCount: pendingDecryption.retryCount,
-				maxRetries: MAX_DECRYPT_RETRY_COUNT,
-				error: errorMessage,
-				errorType: {
-					isPreKeyError,
-					isSessionError,
-					isMacError,
-					isIdentityError
-				}
-			}, 'Scheduling message decryption retry')
-
-			// Handle different error types with specific strategies (WhatsApp Meow pattern)
-			if (isPreKeyError) {
-				// PreKey errors require immediate retry request with keys
-				await retryMutex.mutex(async () => {
-					if (ws.isOpen) {
-						logger.debug({ messageKey, errorType: 'PreKey' }, 'Sending immediate retry request for PreKey error')
-						await sendRetryRequest(node, true) // Force include keys for PreKey errors
-					}
-				})
-			} else if (isSessionError || isMacError) {
-				// Session/MAC errors might need session recreation
-				await retryMutex.mutex(async () => {
-					if (ws.isOpen) {
-						const encNode = getBinaryNodeChild(node, 'enc')
-						logger.debug({ messageKey, errorType: 'Session/MAC' }, 'Sending retry request for Session/MAC error')
-						await sendRetryRequest(node, !encNode)
-					}
-				})
-			} else if (isIdentityError) {
-				// Identity errors need special handling - might need to clear identity
-				logger.warn({ messageKey, errorType: 'Identity' }, 'Identity error detected - may need identity refresh')
-				await retryMutex.mutex(async () => {
-					if (ws.isOpen) {
-						logger.debug({ messageKey, errorType: 'Identity' }, 'Sending retry request for Identity error')
-						await sendRetryRequest(node, true) // Force include keys for Identity errors
-					}
-				})
-			}
-
-			// Retry after delay with exponential backoff
-			const delay = Math.min(DECRYPT_RETRY_DELAY * Math.pow(2, pendingDecryption.retryCount - 1), 10000)
-			setTimeout(async () => {
-				try {
-					logger.debug({ messageKey, retryCount: pendingDecryption.retryCount }, 'Retrying message decryption')
-					await handleMessage(node)
-				} catch (retryError) {
-					logger.error({ messageKey, error: retryError.message }, 'Error during message retry')
-				}
-			}, delay)
-		} else {
-			logger.error({ 
-				messageKey, 
-				retryCount: pendingDecryption.retryCount,
-				error: errorMessage,
-				lastError: pendingDecryption.lastError
-			}, 'Message decryption failed after maximum retries')
-			
-			PENDING_MESSAGE_DECRYPTIONS.delete(messageKey)
-			
-			// Send final retry request as last resort
-			await retryMutex.mutex(async () => {
-				if (ws.isOpen) {
-					const encNode = getBinaryNodeChild(node, 'enc')
-					logger.debug({ messageKey }, 'Sending final retry request after max retries exceeded')
-					await sendRetryRequest(node, !encNode)
-				}
-			})
-		}
-	}
 
 	const msgRetryCache =
 		config.msgRetryCounterCache ||
@@ -397,7 +201,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		
 		// Enhanced retry limit check (whatsmeow uses 5 max retries)
 		if (retryCount >= 5) {
-			logger.warn({ retryCount, msgId, senderJid }, 'reached maximum retry limit (5), not sending more retry receipts')
+			logger.warn({ retryCount, msgId }, 'reached maximum retry limit (5), not sending more retry receipts')
 			msgRetryCache.del(key)
 			return
 		}
@@ -458,20 +262,6 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				]
 			}
 
-			// WhatsApp Meow behavior: only set device_fanout=false for individual chats
-			// For groups, omit device_fanout to allow default fanout behavior
-			const isGroup = isJidGroup(node.attrs.from)
-			if (!isGroup) {
-				receipt.attrs.device_fanout = 'false'
-			}
-			
-			logger.debug({ 
-				isGroup, 
-				from: node.attrs.from, 
-				deviceFanout: receipt.attrs.device_fanout,
-				retryCount 
-			}, 'WhatsApp Meow retry behavior: device_fanout logic applied')
-
 			if (node.attrs.recipient) {
 				receipt.attrs.recipient = node.attrs.recipient
 			}
@@ -480,12 +270,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				receipt.attrs.participant = node.attrs.participant
 			}
 
-			// Enhanced key inclusion logic based on whatsmeow:
-			// - Always include on first retry (retryCount === 1) - helps establish session
-			// - Include when forced (MAC errors, session errors, missing sessions)
+			// Include keys based on whatsmeow logic:
+			// - Always include on first retry (retryCount === 1)
+			// - Include when forced (MAC errors, session errors)
 			// - Include when retry count > 1 (session recreation scenarios)
-			// - Include when internal retry counter is high (session corruption likely)
-			const shouldIncludeKeys = retryCount === 1 || forceIncludeKeys || retryCount > 1 || internalRetryCount >= 3
+			const shouldIncludeKeys = retryCount === 1 || forceIncludeKeys || retryCount > 1
 			
 			if (shouldIncludeKeys) {
 				const { update, preKeys } = await getNextPreKeys(authState, 1)
@@ -1170,30 +959,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				}
 			}
 
-			// Use per-message mutex to prevent race conditions (WhatsApp Meow pattern)
-			const messageMutex = getMessageMutex(messageKey)
-			
 			await Promise.all([
-				messageMutex.mutex(async () => {
-					// Check if message is already being processed
-					const pendingDecryption = PENDING_MESSAGE_DECRYPTIONS.get(messageKey)
-					if (pendingDecryption?.processing) {
-						logger.debug({ messageKey }, 'Message already being processed, skipping duplicate')
-						return
-					}
-					
-					// Mark as processing
-					if (pendingDecryption) {
-						pendingDecryption.processing = true
-					}
-					
+				processingMutex.mutex(async () => {
 					try {
 						await decrypt()
 
 						// Remove da queue de retry se descriptografia foi bem sucedida
 						if (PENDING_MESSAGE_DECRYPTIONS.has(messageKey)) {
 							PENDING_MESSAGE_DECRYPTIONS.delete(messageKey)
-							logger.debug({ messageKey }, 'Message decrypted successfully, removed from retry queue')
+							console.warn({ messageKey }, 'Message decrypted successfully after retry')
 						}
 
 						// Add to recent messages cache for retry receipts (whatsmeow pattern)
@@ -1211,32 +985,111 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								return sendMessageAck(node, NACK_REASONS.ParsingError)
 							}
 
-							// Handle decryption failure with proper retry logic
-							await handleDecryptionFailure(messageKey, node, msg)
+							retryMutex.mutex(async () => {
+								if (ws.isOpen) {
+									if (getBinaryNodeChild(node, 'unavailable')) {
+										return
+									}
+
+									const encNode = getBinaryNodeChild(node, 'enc')
+
+									console.warn({ messageKey, node }, 'Message decryption failed, sending retry request')
+									
+									await sendRetryRequest(node, !encNode)
+									if (retryRequestDelayMs) {
+										await delay(retryRequestDelayMs)
+									}
+								} else {
+									logger.debug({ node }, 'connection closed, ignoring retry req')
+								}
+							})
 						} else {
-							// Handle successful decryption
-							await handleSuccessfulDecryption(msg, category, author)
+							// Processamento normal da mensagem
+							let type: MessageReceiptType = undefined
+							let participant = msg.key.participant
+							if (category === 'peer') {
+								type = 'peer_msg'
+							} else if (msg.key.fromMe) {
+								type = 'sender'
+								if (isJidUser(msg.key.remoteJid!)) {
+									participant = author
+								}
+							} else if (!sendActiveReceipts) {
+								type = 'inactive'
+							}
+
+							await sendReceipt(msg.key.remoteJid!, participant!, [msg.key.id!], type)
+
+							const isAnyHistoryMsg = getHistoryMsg(msg.message!)
+							if (isAnyHistoryMsg) {
+								const jid = jidNormalizedUser(msg.key.remoteJid!)
+								await sendReceipt(jid, undefined, [msg.key.id!], 'hist_sync')
+							}
 						}
 
 						cleanMessage(msg, authState.creds.me!.id)
 						await sendMessageAck(node)
 						await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
-					} catch (error) {
-						logger.error({ 
-							messageKey, 
-							error: error.message,
-							errorType: error.constructor.name,
-							sender: node.attrs.from,
-							messageType: node.attrs.type
-						}, 'Error during message decryption')
-						
-						// Handle decryption error with WhatsApp Meow inspired logic
-						await handleDecryptionError(messageKey, node, error)
-					} finally {
-						// Mark as not processing
-						const pendingDecryption = PENDING_MESSAGE_DECRYPTIONS.get(messageKey)
-						if (pendingDecryption) {
-							pendingDecryption.processing = false
+					} catch (decryptError) {
+						console.error({ error: decryptError, messageKey }, 'Decryption failed')
+						// Tratamento específico para SessionError
+						if (decryptError.message.includes('No session') || decryptError.message.includes('Bad MAC')
+						|| decryptError.message.includes('MAC verification') || decryptError.message.includes('No matching sessions')
+						) {
+							console.warn('trying to handle session error in message decryption')
+
+							const pendingDecryption = PENDING_MESSAGE_DECRYPTIONS.get(messageKey)
+
+							if (!pendingDecryption) {
+								// Primeira falha - adiciona à queue
+								PENDING_MESSAGE_DECRYPTIONS.set(messageKey, {
+									node,
+									retryCount: 1,
+									timestamp: Date.now()
+								})
+
+								console.warn({ messageKey, error: decryptError.message }, 'Session not found, scheduling retry')
+
+								// Agenda retry
+								setTimeout(() => {
+									retryMessageDecryption(messageKey).catch(err =>
+										logger.error({ err, messageKey }, 'Error in retry decryption')
+									)
+								}, DECRYPT_RETRY_DELAY)
+
+								// Por enquanto, processa como ciphertext
+								msg.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
+								msg.messageStubParameters = ['Session not ready, retrying...']
+
+								cleanMessage(msg, authState.creds.me!.id)
+								await sendMessageAck(node)
+								await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
+							} else if (pendingDecryption.retryCount < MAX_DECRYPT_RETRY_COUNT) {
+								// Retry subsequente
+								pendingDecryption.retryCount++
+								console.warn({ messageKey, retryCount: pendingDecryption.retryCount }, 'Retrying message decryption')
+
+								setTimeout(() => {
+									retryMessageDecryption(messageKey).catch(err =>
+										console.error({ err, messageKey }, 'Error in retry decryption')
+									)
+								}, DECRYPT_RETRY_DELAY * pendingDecryption.retryCount)
+							} else {
+								// Máximo de retries atingido
+								PENDING_MESSAGE_DECRYPTIONS.delete(messageKey)
+								console.error({ messageKey }, 'Max retry count reached for message decryption')
+
+								msg.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
+								msg.messageStubParameters = ['Decryption failed after retries']
+
+								cleanMessage(msg, authState.creds.me!.id)
+								await sendMessageAck(node)
+								await upsertMessage(msg, node.attrs.offline ? 'append' : 'notify')
+							}
+						} else {
+							// Outros erros de descriptografia
+							logger.error({ error: decryptError, messageKey }, 'Decryption failed with non-session error')
+							throw decryptError
 						}
 					}
 				})
@@ -1702,6 +1555,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			logger.trace(`sendActiveReceipts set to "${sendActiveReceipts}"`)
 		}
 	})
+
+	// Setup automatic cleanup of old retry states (inspired by whatsmeow)
+	const cleanupInterval = setInterval(() => {
+		try {
+			cleanupOldRetryStates()
+		} catch (error) {
+			logger.warn({ error: error.message }, 'Failed to cleanup old retry states')
+		}
+	}, 60 * 60 * 1000) // Run every hour
 
 	// Cleanup on socket close
 	sock.ev.on('connection.update', ({ connection }) => {
