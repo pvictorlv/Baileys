@@ -36,9 +36,10 @@ export const DECRYPTION_RETRY_CONFIG = {
 		'Signature verification failed'
 	],
 	macErrors: ['Bad MAC', 'MAC verification failed', 'Bad MAC Error', 'Decryption failed'],
-	prekeyErrors: ['Invalid PreKey ID', 'PreKey not found', 'Invalid PreKey', 'PreKey ID not found'],
+	prekeyErrors: ['Invalid PreKey ID', 'PreKey not found', 'Invalid PreKey', 'PreKey ID not found', 'failed to decrypt message'],
 	allRecoverableErrors: [
 		'No session record',
+		'failed to decrypt message',
 		'Session record not found',
 		'SessionError',
 		'Session Record error',
@@ -816,7 +817,7 @@ async function decryptWithRetry(
 			if (node && sendRetryRequestFn && currentRetryCount <= 2) {
 				try {
 					// Force include keys on first retry, MAC errors, session errors, prekey errors, or when session recreation is needed
-					const forceIncludeKeys = isSessionRecordError(error) || isMacError(error) || isPreKeyError(error) || recreate || currentRetryCount > 1
+					const forceIncludeKeys = isSessionRecordError(error) || isMacError(error) || isPreKeyError(error) || recreate || currentRetryCount >= 1
 					await sendRetryRequestFn(node, forceIncludeKeys)
 					logger.debug({
 						key: messageKey,
