@@ -13,7 +13,7 @@ import {
 	isLidUser, jidDecode, jidEncode, jidNormalizedUser
 } from '../WABinary'
 import {unpadRandomMax16} from './generics'
-import {ILogger} from './logger'
+import logger, {ILogger} from './logger'
 import {fetchPreKeys} from './signal'
 
 export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
@@ -205,17 +205,22 @@ export async function shouldRecreateSession(
 				const hasSession = await context.signalRepository.hasSession(jid)
 				if (!hasSession) {
 					sessionRecreateHistory.set(jid, now)
+					logger?.info({jid}, 'No existing session found, recommending session recreation')
 					return {
 						reason: "we don't have a Signal session with them",
 						recreate: true,
 						shouldFetchPreKeys: true
 					}
+				} else {
+					logger?.info({jid}, 'Existing session found, no need to recreate session')
 				}
 			} catch (error) {
 				// If there's an error checking session existence, return false (whatsmeow behavior)
 				context.logger?.warn({jid, error: error.message}, 'Failed to check session existence')
 				return {reason: '', recreate: false, shouldFetchPreKeys: false}
 			}
+		} else {
+			logger?.warn({jid}, 'No signal repository provided, cannot check session existence')
 		}
 
 		// Don't recreate if retry count < 2 (whatsmeow logic)
