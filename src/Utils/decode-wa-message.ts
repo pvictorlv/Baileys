@@ -596,13 +596,24 @@ export const decryptMessageNode = (
 										case 'pkmsg':
 										case 'msg':
 											const user = isJidUser(sender) ? sender : author
-											const decryptionJid = await getDecryptionJid(user, repository)
-											const msg = await repository.decryptMessage({
-												jid: decryptionJid,
-												type: e2eType,
-												ciphertext: content
-											})
-											await storeMappingFromEnvelope(stanza, user, decryptionJid, repository, logger)
+											let msg;
+											try {
+												msg = await repository.decryptMessage({
+													jid: user,
+													type: e2eType,
+													ciphertext: content
+												})
+											} catch (err) {
+												logger.warn({key: fullMessage.key, err}, 'initial decryption failed, attempting with decryption JID')
+												const decryptionJid = await getDecryptionJid(user, repository)
+												msg = await repository.decryptMessage({
+													jid: decryptionJid,
+													type: e2eType,
+													ciphertext: content
+												});
+												// If we had to use a different JID to decrypt, store the mapping if possible
+												await storeMappingFromEnvelope(stanza, user, decryptionJid, repository, logger)
+											}
 											return msg;
 										default:
 											throw new Error(`Unknown e2e type: ${e2eType}`)
