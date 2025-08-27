@@ -135,7 +135,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					ciphertext,
 					senderKeyDistributionMessage: senderKeyDistributionMessage.serialize()
 				}
-			})
+			}, auth.creds.me?.id || 'default')
 		},
 		async injectE2ESession({ jid, session }) {
 			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
