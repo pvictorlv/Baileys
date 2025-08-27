@@ -1,6 +1,6 @@
 import EventEmitter from 'events'
-import { proto } from '../../WAProto'
-import {
+import { proto } from '../../WAProto/index.js'
+import type {
 	BaileysEvent,
 	BaileysEventEmitter,
 	BaileysEventMap,
@@ -8,11 +8,11 @@ import {
 	Chat,
 	ChatUpdate,
 	Contact,
-	WAMessage,
-	WAMessageStatus
+	WAMessage
 } from '../Types'
+import { WAMessageStatus } from '../Types'
 import { trimUndefined } from './generics'
-import { ILogger } from './logger'
+import type { ILogger } from './logger'
 import { updateMessageWithReaction, updateMessageWithReceipt } from './messages'
 import { isRealMessage, shouldIncrementChatUnread } from './process-message'
 
@@ -56,10 +56,9 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
 	createBufferedFunction<A extends any[], T>(work: (...args: A) => Promise<T>): (...args: A) => Promise<T>
 	/**
 	 * flushes all buffered events
-	 * @param force if true, will flush all data regardless of any pending buffers
 	 * @returns returns true if the flush actually happened, otherwise false
 	 */
-	flush(force?: boolean): boolean
+	flush(): boolean
 	/** is there an ongoing buffer */
 	isBuffering(): boolean
 }
@@ -67,7 +66,7 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
 /**
  * The event buffer logically consolidates different events into a single event
  * making the data processing more efficient.
- * @param ev the baileys event emitter
+ * @param logger the logger instance for debugging
  */
 export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter => {
 	const ev = new EventEmitter()
@@ -75,40 +74,99 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 
 	let data = makeBufferData()
 	let buffersInProgress = 0
+	let lastFlushAttempt = Date.now()
+	let flushTimeout: NodeJS.Timeout | null = null
+	let isBuffering = false
+
+	// Safety mechanism: force flush if buffer is stuck for too long
+	const MAX_BUFFER_TIME = 45000 // 45 seconds
+
+	const scheduleForceFlush = () => {
+		if (flushTimeout) {
+			clearTimeout(flushTimeout)
+		}
+
+		flushTimeout = setTimeout(() => {
+			const timeSinceLastFlush = Date.now() - lastFlushAttempt
+			if (buffersInProgress > 0 && timeSinceLastFlush > MAX_BUFFER_TIME) {
+				logger.warn(
+					{
+						buffersInProgress,
+						timeSinceLastFlush
+					},
+					'Force flushing stuck event buffer'
+				)
+				flush(true)
+			}
+		}, MAX_BUFFER_TIME)
+	}
 
 	// take the generic event and fire it as a baileys event
 	ev.on('event', (map: BaileysEventData) => {
 		for (const event in map) {
-			ev.emit(event, map[event])
+			ev.emit(event, map[event as keyof BaileysEventMap])
 		}
 	})
 
 	function buffer() {
+		if (!isBuffering) {
+			logger.debug('Event buffer activated')
+			isBuffering = true
+		}
+
 		buffersInProgress += 1
+		logger.trace({ buffersInProgress }, 'buffer started')
+		scheduleForceFlush()
 	}
 
 	function flush(force = false) {
-		// no buffer going on
-		if (!buffersInProgress) {
+		if (!isBuffering) {
 			return false
 		}
 
 		if (!force) {
 			// reduce the number of buffers in progress
 			buffersInProgress -= 1
+			logger.trace({ buffersInProgress }, 'buffer decremented')
 			// if there are still some buffers going on
 			// then we don't flush now
 			if (buffersInProgress) {
 				return false
 			}
+		} else {
+			// Force flush - reset counter
+			logger.debug({ buffersInProgress }, 'force flushing, resetting buffer counter')
+			buffersInProgress = 0
 		}
+
+		logger.debug('Flushing event buffer')
+		isBuffering = false
+
+		// Clear the force flush timeout
+		if (flushTimeout) {
+			clearTimeout(flushTimeout)
+			flushTimeout = null
+		}
+
+		lastFlushAttempt = Date.now()
 
 		const newData = makeBufferData()
 		const chatUpdates = Object.values(data.chatUpdates)
-		// gather the remaining conditional events so we re-queue them
 		let conditionalChatUpdatesLeft = 0
+		let staleChatUpdatesRemoved = 0
+		const now = Date.now()
+
 		for (const update of chatUpdates) {
 			if (update.conditional) {
+				// Remove stale conditional updates (older than 5 minutes)
+				const updateAge = now - (update.timestamp || 0)
+				if (updateAge > 300000) {
+					// 5 minutes
+					staleChatUpdatesRemoved += 1
+					logger.debug({ chatId: update.id, updateAge }, 'removing stale conditional chat update')
+					continue
+				}
+
 				conditionalChatUpdatesLeft += 1
 				newData.chatUpdates[update.id!] = update
 				delete data.chatUpdates[update.id!]
@@ -122,7 +180,14 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 
 		data = newData
 
-		logger.trace({ conditionalChatUpdatesLeft }, 'released buffered events')
+		logger.trace(
+			{
+				conditionalChatUpdatesLeft,
+				staleChatUpdatesRemoved,
+				buffersInProgress
+			},
+			'released buffered events'
+		)
 
 		return true
 	}
@@ -139,7 +204,7 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 			}
 		},
 		emit<T extends BaileysEvent>(event: BaileysEvent, evData: BaileysEventMap[T]) {
-			if (buffersInProgress && BUFFERABLE_EVENT_SET.has(event)) {
+			if (isBuffering && BUFFERABLE_EVENT_SET.has(event)) {
 				append(data, historyCache, event as BufferableEvent, evData, logger)
 				return true
 			}
@@ -147,18 +212,30 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 			return ev.emit('event', { [event]: evData })
 		},
 		isBuffering() {
-			return buffersInProgress > 0
+			return isBuffering
 		},
 		buffer,
 		flush,
 		createBufferedFunction(work) {
 			return async (...args) => {
 				buffer()
+				let bufferReleased = false
+
 				try {
 					const result = await work(...args)
-					return result
-				} finally {
 					flush()
+					bufferReleased = true
+					return result
+				} catch (error: any) {
+					// Ensure buffer is always released, even on error
+					if (!bufferReleased) {
+						logger.warn({ error: error.message }, 'releasing buffer due to error in buffered function')
+						flush()
+					}
+
+					throw error
+				} finally {
+					// Flushing is now controlled centrally by the state machine.
 				}
 			}
 		},
@@ -249,7 +326,7 @@ function append<E extends BufferableEvent>(
 			for (const chat of eventData as Chat[]) {
 				let upsert = data.chatUpserts[chat.id]
 				if (!upsert) {
-					upsert = data.historySets[chat.id]
+					upsert = data.historySets.chats[chat.id]
 					if (upsert) {
 						logger.debug({ chatId: chat.id }, 'absorbed chat upsert in chat set')
 					}
@@ -287,7 +364,8 @@ function append<E extends BufferableEvent>(
 						data.chatUpdates[chatId] = concatChats(chatUpdate, update)
 					}
 				} else if (conditionMatches === undefined) {
-					// condition yet to be fulfilled
+					// condition yet to be fulfilled - add timestamp for tracking
+					update.timestamp = update.timestamp || Date.now()
 					data.chatUpdates[chatId] = update
 				}
 				// otherwise -- condition not met, update is invalid
@@ -339,7 +417,7 @@ function append<E extends BufferableEvent>(
 				}
 
 				if (data.contactUpdates[contact.id]) {
-					upsert = Object.assign(data.contactUpdates[contact.id], trimUndefined(contact)) as Contact
+					upsert = Object.assign(data.contactUpdates[contact.id]!, trimUndefined(contact)) as Contact
 					delete data.contactUpdates[contact.id]
 				}
 			}
@@ -550,7 +628,7 @@ function consolidateEvents(data: BufferedEventData) {
 
 	const messageUpsertList = Object.values(data.messageUpserts)
 	if (messageUpsertList.length) {
-		const type = messageUpsertList[0].type
+		const type = messageUpsertList[0]!.type
 		map['messages.upsert'] = {
 			messages: messageUpsertList.map(m => m.message),
 			type
