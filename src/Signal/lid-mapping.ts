@@ -1,12 +1,15 @@
-import { SignalKeyStoreWithTransaction } from '../Types'
+import {Contact, SignalAuthState, SignalKeyStoreWithTransaction} from '../Types'
 import logger from '../Utils/logger'
 import { isJidUser, isLidUser, jidDecode } from '../WABinary'
 
 export class LIDMappingStore {
 	private readonly keys: SignalKeyStoreWithTransaction
+	private readonly me: Contact | undefined;
 
-	constructor(keys: SignalKeyStoreWithTransaction) {
-		this.keys = keys
+	constructor(auth: SignalAuthState) {
+		this.keys = auth.keys as SignalKeyStoreWithTransaction
+		this.me = auth.creds.me
+
 	}
 
 	/**
@@ -39,7 +42,7 @@ export class LIDMappingStore {
 					[`${lidUser}_reverse`]: pnUser // "102765716062358_reverse" -> "554396160286"
 				}
 			})
-		}, lid)
+		}, this.me!.id)
 
 		logger.trace(`USER LID mapping stored: PN ${pnUser} → LID ${lidUser}`)
 	}

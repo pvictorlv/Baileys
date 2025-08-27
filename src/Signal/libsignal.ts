@@ -13,7 +13,7 @@ import { LIDMappingStore } from './lid-mapping'
 
 
 export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository {
-	const lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction)
+	const lidMapping = new LIDMappingStore(auth)
 	const storage = signalStorage(auth, lidMapping)
 
 	const recentMigrations = new LRUCache<string, boolean>({
@@ -45,7 +45,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				return cipher.decrypt(msg)
-			}, group)
+			}, auth.creds.me!.id)
 		},
 
 		async processSenderKeyDistributionMessage({ item, authorJid }) {
@@ -72,7 +72,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				}
 
 				await builder.process(senderName, senderMsg)
-			}, item.groupId)
+			}, auth.creds.me!.id)
 		},
 
 		async decryptMessage({ jid, type, ciphertext }) {
@@ -103,7 +103,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			// For regular messages, use transaction and recovery mechanism
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				return await doDecrypt()
-			}, jid)
+			}, auth.creds.me!.id)
 		},
 		async encryptMessage({ jid, data }) {
 			// LID SINGLE SOURCE OF TRUTH: Always prefer LID when available
@@ -142,7 +142,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				const { type: sigType, body } = await cipher.encrypt(data)
 				const type = sigType === 3 ? 'pkmsg' : 'msg'
 				return { type, ciphertext: Buffer.from(body, 'binary') }
-			}, jid)
+			}, auth.creds.me!.id)
 		},
 		async encryptGroupMessage({ group, meId, data }) {
 			const senderName = jidToSignalSenderKeyName(group, meId)
@@ -165,7 +165,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 					ciphertext,
 					senderKeyDistributionMessage: senderKeyDistributionMessage.serialize()
 				}
-			}, group)
+			}, auth.creds.me!.id)
 		},
 		async injectE2ESession({ jid, session }) {
 			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
@@ -173,7 +173,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				await cipher.initOutgoing(session)
-			}, jid)
+			}, auth.creds.me!.id)
 		},
 		jidToSignalProtocolAddress(jid) {
 			return jidToSignalProtocolAddress(jid).toString()
@@ -218,7 +218,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				await auth.keys.set({ session: { [addr.toString()]: null } })
-			}, jid)
+			}, auth.creds.me!.id)
 		},
 
 		async migrateSession(fromJid: string, toJid: string) {
@@ -268,7 +268,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				}
 
 				recentMigrations.set(migrationKey, true)
-			}, fromJid)
+			}, auth.creds.me!.id)
 		},
 
 		async encryptMessageWithWire({ encryptionJid, wireJid, data }) {

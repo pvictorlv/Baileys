@@ -305,14 +305,6 @@ export const addTransactionCapability = (
 	logger: ILogger,
 	{ maxCommitRetries, delayBetweenTriesMs }: TransactionCapabilityOptions
 ): SignalKeyStoreWithTransaction => {
-	// Mutex for each key type (session, pre-key, etc.)
-	const keyTypeMutexes = new Map<string, Mutex>()
-
-	// Per-sender-key-name mutexes for fine-grained serialization
-	const senderKeyMutexes = new Map<string, Mutex>()
-
-	// Track last usage time for sender key mutexes (in milliseconds)
-	const senderKeyMutexLastUsed = new Map<string, number>()
 
 	// Mutex expiration time (1 hour in milliseconds)
 	const MUTEX_EXPIRATION_TIME = 60 * 60 * 1000 // 1 hour
@@ -337,32 +329,6 @@ export const addTransactionCapability = (
 
 	let transactionsInProgress = 0
 
-	// Cleanup expired sender key mutexes
-	function cleanupExpiredSenderKeyMutexes(): void {
-		const now = Date.now()
-		const expiredKeys: string[] = []
-
-		for (const [senderKeyName, lastUsed] of senderKeyMutexLastUsed.entries()) {
-			if (now - lastUsed > MUTEX_EXPIRATION_TIME) {
-				expiredKeys.push(senderKeyName)
-			}
-		}
-
-		if (expiredKeys.length > 0) {
-			for (const senderKeyName of expiredKeys) {
-				senderKeyMutexes.delete(senderKeyName)
-				senderKeyMutexLastUsed.delete(senderKeyName)
-			}
-
-			logger.info(
-				{
-					expiredCount: expiredKeys.length,
-					remainingCount: senderKeyMutexes.size
-				},
-				'cleaned up expired sender key mutexes'
-			)
-		}
-	}
 
 	// Cleanup expired transaction mutexes
 	function cleanupExpiredTransactionMutexes(): void {
@@ -396,7 +362,6 @@ export const addTransactionCapability = (
 		if (cleanupTimer) return
 
 		cleanupTimer = setInterval(() => {
-			cleanupExpiredSenderKeyMutexes()
 			cleanupExpiredTransactionMutexes()
 		}, CLEANUP_INTERVAL)
 
@@ -415,29 +380,7 @@ export const addTransactionCapability = (
 
 	// Get or create a mutex for a specific key type
 	function getKeyTypeMutex(type: string): Mutex {
-		let mutex = keyTypeMutexes.get(type)
-		if (!mutex) {
-			// Create regular mutex, timeout only for critical operations
-			mutex = new Mutex()
-			keyTypeMutexes.set(type, mutex)
-		}
-
-		return mutex
-	}
-
-	// Get or create a mutex for a specific sender key name
-	function getSenderKeyMutex(senderKeyName: string): Mutex {
-		// Update last used time
-		senderKeyMutexLastUsed.set(senderKeyName, Date.now())
-
-		let mutex = senderKeyMutexes.get(senderKeyName)
-		if (!mutex) {
-			mutex = new Mutex()
-			senderKeyMutexes.set(senderKeyName, mutex)
-			logger.info({ senderKeyName }, 'created new sender key mutex')
-		}
-
-		return mutex
+		return getTransactionMutex(type)
 	}
 
 	function getTransactionMutex(key: string): Mutex {
@@ -456,7 +399,7 @@ export const addTransactionCapability = (
 
 	// Sender key operations with proper mutex sequencing
 	function queueSenderKeyOperation<T>(senderKeyName: string, operation: () => Promise<T>): Promise<T> {
-		return getSenderKeyMutex(senderKeyName).runExclusive(operation)
+		return getTransactionMutex(senderKeyName).runExclusive(operation)
 	}
 
 	// Check if we are currently in a transaction
@@ -528,72 +471,89 @@ export const addTransactionCapability = (
 		},
 		set: async data => {
 			if (isInTransaction()) {
-				logger.trace({ types: Object.keys(data) }, 'caching in transaction')
+				logger.trace({types: Object.keys(data)}, 'caching in transaction')
 				for (const key in data) {
 					transactionCache[key] = transactionCache[key] || {}
 
-					// Special handling for pre-keys and signed-pre-keys
-					if (key === 'pre-key' || key === 'signed-pre-key') {
-						await handlePreKeyOperations(data, key, transactionCache, mutations, logger, true)
+					// Special handling for pre-keys to prevent unexpected deletion
+					if (key === 'pre-key') {
+						for (const keyId in data[key]) {
+							// If we're trying to delete a pre-key, check if we have it in cache first
+							if (data[key][keyId] === null) {
+								// Only allow deletion if we have the key in cache
+								// This prevents unexpected deletions during race conditions
+								if (transactionCache[key] && transactionCache[key][keyId]) {
+									if (!transactionCache[key]) {
+										transactionCache[key] = {}
+									}
+									transactionCache[key][keyId] = null
+
+									if (!mutations[key]) {
+										mutations[key] = {}
+									}
+									mutations[key][keyId] = null
+								} else {
+									// Skip deletion if key doesn't exist in cache
+									logger.warn(`Attempted to delete non-existent pre-key: ${keyId}`)
+									continue
+								}
+							} else {
+								// Normal update
+								if (!transactionCache[key]) {
+									transactionCache[key] = {}
+								}
+								transactionCache[key][keyId] = data[key][keyId]
+
+								if (!mutations[key]) {
+									mutations[key] = {}
+								}
+								mutations[key][keyId] = data[key][keyId]
+							}
+						}
 					} else {
 						// Normal handling for other key types
-						handleNormalKeyOperations(data, key, transactionCache, mutations)
+						Object.assign(transactionCache[key], data[key])
+
+						mutations[key] = mutations[key] || {}
+						Object.assign(mutations[key], data[key])
 					}
+
 				}
 			} else {
 				// Not in transaction, apply directly with mutex protection
-				const hasSenderKeys = 'sender-key' in data
-				const senderKeyNames = hasSenderKeys ? Object.keys(data['sender-key'] || {}) : []
+				const mutexes: Mutex[] = []
 
-				if (hasSenderKeys) {
-					logger.info({ senderKeyNames }, 'processing sender key set operations')
-					// Handle sender key operations with per-key queues
-					for (const senderKeyName of senderKeyNames) {
-						await queueSenderKeyOperation(senderKeyName, async () => {
-							// Create data subset for this specific sender key
-							const senderKeyData = {
-								'sender-key': {
-									[senderKeyName]: data['sender-key']![senderKeyName]
+				try {
+					// Acquire all necessary mutexes to prevent concurrent access
+					for (const keyType in data) {
+						const typeMutex = getKeyTypeMutex(keyType)
+						await typeMutex.acquire()
+						mutexes.push(typeMutex)
+
+						// For pre-keys, we need special handling
+						if (keyType === 'pre-key') {
+							for (const keyId in data[keyType]) {
+								if (data[keyType][keyId] === null) {
+									// Check if the key exists before deleting
+									const existingKeys = await state.get(keyType as any, [keyId])
+									if (!existingKeys[keyId]) {
+										// Skip deletion if key doesn't exist
+										logger.warn(`Attempted to delete non-existent pre-key: ${keyId}`)
+										delete data[keyType][keyId]
+									}
 								}
-							}
-
-							logger.trace({ senderKeyName }, 'storing sender key')
-							// Apply changes to the store
-							await state.set(senderKeyData)
-							logger.trace({ senderKeyName }, 'sender key stored')
-						})
-					}
-
-					// Handle any non-sender-key data with regular mutexes
-					const nonSenderKeyData = { ...data }
-					delete nonSenderKeyData['sender-key']
-
-					if (Object.keys(nonSenderKeyData).length > 0) {
-						await withMutexes(Object.keys(nonSenderKeyData), getKeyTypeMutex, async () => {
-							// Process pre-keys and signed-pre-keys separately with specialized mutexes
-							for (const keyType in nonSenderKeyData) {
-								if (keyType === 'pre-key' || keyType === 'signed-pre-key') {
-									await processPreKeyDeletions(nonSenderKeyData, keyType, state, logger)
-								}
-							}
-
-							// Apply changes to the store
-							await state.set(nonSenderKeyData)
-						})
-					}
-				} else {
-					// No sender keys - use original logic
-					await withMutexes(Object.keys(data), getKeyTypeMutex, async () => {
-						// Process pre-keys and signed-pre-keys separately with specialized mutexes
-						for (const keyType in data) {
-							if (keyType === 'pre-key' || keyType === 'signed-pre-key') {
-								await processPreKeyDeletions(data, keyType, state, logger)
 							}
 						}
+					}
 
-						// Apply changes to the store
-						await state.set(data)
-					})
+					// Apply changes to the store
+					await state.set(data)
+				} finally {
+					// Release all mutexes in reverse order
+					while (mutexes.length > 0) {
+						const mutex = mutexes.pop()
+						if (mutex) mutex.release()
+					}
 				}
 			}
 		},
@@ -618,19 +578,39 @@ export const addTransactionCapability = (
 							result = await work()
 							// commit if this is the outermost transaction
 							if (transactionsInProgress === 1) {
-								const hasMutations = Object.keys(mutations).length > 0
-
-								if (hasMutations) {
+								if (Object.keys(mutations).length) {
 									logger.trace('committing transaction')
-									await commitWithRetry(
-										mutations,
-										state,
-										getKeyTypeMutex,
-										maxCommitRetries,
-										delayBetweenTriesMs,
-										logger
-									)
-									logger.trace({ dbQueriesInTransaction }, 'transaction completed')
+									// retry mechanism to ensure we've some recovery
+									// in case a transaction fails in the first attempt
+									let tries = maxCommitRetries
+									while (tries) {
+										tries -= 1
+										//eslint-disable-next-line max-depth
+										try {
+											// Acquire mutexes for all key types being modified
+											const mutexes: Mutex[] = []
+											for (const keyType in mutations) {
+												const typeMutex = getKeyTypeMutex(keyType)
+												await typeMutex.acquire()
+												mutexes.push(typeMutex)
+											}
+											try {
+												await state.set(mutations)
+												logger.trace({ dbQueriesInTransaction }, 'committed transaction')
+												break
+											} finally {
+												// Release all mutexes in reverse order
+												while (mutexes.length > 0) {
+													const mutex = mutexes.pop()
+													if (mutex) mutex.release()
+												}
+											}
+
+										} catch (error) {
+											logger.warn(`failed to commit ${Object.keys(mutations).length} mutations, tries left=${tries}`)
+											await delay(delayBetweenTriesMs)
+										}
+									}
 								} else {
 									logger.trace('no mutations in transaction')
 								}
