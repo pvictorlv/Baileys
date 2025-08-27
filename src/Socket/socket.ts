@@ -30,6 +30,7 @@ import {
 	makeNoiseHandler,
 	promiseTimeout
 } from '../Utils'
+import { createPreKeyIntegration, createPreKeyManagerWrappers } from '../Utils/prekey-integration'
 import {
 	assertNodeErrorFree,
 	BinaryNode,
@@ -257,39 +258,69 @@ export const makeSocket = (config: SocketConfig) => {
 		startKeepAliveRequest()
 	}
 
+	// Initialize Advanced PreKey Manager
+	const preKeyIntegration = createPreKeyIntegration(keys, query, logger, {
+		enableAdvancedManager: true,
+		fallbackToLegacy: true,
+		config: {
+			wantedPreKeyCount: 50, // WhatsMeow default
+			minPreKeyCount: MIN_PREKEY_COUNT,
+			enableRaceConditionPrevention: true,
+			enablePerformanceMonitoring: true
+		}
+	})
+
+	// Create wrapper functions for compatibility
+	const preKeyManager = createPreKeyManagerWrappers(preKeyIntegration, creds)
+
 	const getAvailablePreKeysOnServer = async () => {
-		const result = await query({
-			tag: 'iq',
-			attrs: {
-				id: generateMessageTag(),
-				xmlns: 'encrypt',
-				type: 'get',
-				to: S_WHATSAPP_NET
-			},
-			content: [{ tag: 'count', attrs: {} }]
-		})
-		const countChild = getBinaryNodeChild(result, 'count')
-		return +countChild!.attrs.value
+		return await preKeyManager.getAvailablePreKeysOnServer()
 	}
 
 	/** generates and uploads a set of pre-keys to the server */
 	const uploadPreKeys = async (count = INITIAL_PREKEY_COUNT) => {
 		await keys.transaction(async () => {
-			logger.info({ count }, 'uploading pre-keys')
-			const { update, node } = await getNextPreKeysNode({ creds, keys }, count)
-
-			await query(node)
-			ev.emit('creds.update', update)
-
-			logger.info({ count }, 'uploaded pre-keys')
+			logger.info({ count }, 'uploading pre-keys via Advanced Manager')
+			
+			try {
+				await preKeyManager.uploadPreKeys(count)
+				
+				// Emit creds update for compatibility
+				ev.emit('creds.update', creds)
+				
+				logger.info({ count }, 'uploaded pre-keys successfully')
+				
+				// Log advanced stats if available
+				const stats = preKeyManager.getStats()
+				if (stats) {
+					logger.debug('PreKey Manager Stats', stats)
+				}
+			} catch (error) {
+				logger.error('Failed to upload pre-keys', { error: error.message, count })
+				throw error
+			}
 		}, authState?.creds?.me?.id || 'pre-keys')
 	}
 
 	const uploadPreKeysToServerIfRequired = async () => {
-		const preKeyCount = await getAvailablePreKeysOnServer()
-		logger.info(`${preKeyCount} pre-keys found on server`)
-		if (preKeyCount <= MIN_PREKEY_COUNT) {
-			await uploadPreKeys()
+		try {
+			await preKeyManager.uploadPreKeysToServerIfRequired()
+			
+			// Perform health check after upload
+			const healthCheck = await preKeyManager.healthCheck()
+			if (!healthCheck.healthy) {
+				logger.warn('PreKey system health check failed', { 
+					issues: healthCheck.issues,
+					serverCount: healthCheck.serverCount
+				})
+			} else {
+				logger.debug('PreKey system healthy', { 
+					serverCount: healthCheck.serverCount 
+				})
+			}
+		} catch (error) {
+			logger.error('Failed to upload pre-keys if required', { error: error.message })
+			throw error
 		}
 	}
 
@@ -757,6 +788,10 @@ export const makeSocket = (config: SocketConfig) => {
 		onUnexpectedError,
 		uploadPreKeys,
 		uploadPreKeysToServerIfRequired,
+		// Advanced PreKey Manager functions
+		getPreKeyStats: () => preKeyManager.getStats(),
+		preKeyHealthCheck: () => preKeyManager.healthCheck(),
+		resetPreKeyStats: () => preKeyManager.resetStats(),
 		requestPairingCode,
 		/** Waits for the connection to WA to reach a state */
 		waitForConnectionUpdate: bindWaitForConnectionUpdate(ev),
