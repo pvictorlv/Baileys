@@ -803,7 +803,7 @@ async function decryptWithRetry(
 						try {
 							const success = await executeSessionRecreation(senderJid, sessionContext)
 							if (success) {
-								logger.debug({jid: senderJid}, 'Session recreation completed successfully')
+								logger.info({jid: senderJid}, 'Session recreation completed successfully')
 							} else {
 								logger.warn({jid: senderJid}, 'Session recreation failed')
 							}
