@@ -26,6 +26,7 @@ import {
 	getStatusCodeForMediaRetry,
 	getUrlFromDirectPath,
 	getWAUploadToServer,
+	MessageRetryManager,
 	normalizeMessageContent,
 	parseAndInjectE2ESessions,
 	unixTimestampSeconds
@@ -56,7 +57,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		generateHighQualityLinkPreview,
 		options: axiosOptions,
 		patchMessageBeforeSending,
-		cachedGroupMetadata
+		cachedGroupMetadata,
+		enableRecentMessageCache
 	} = config
 	const sock: NewsletterSocket = makeNewsletterSocket(makeGroupsSocket(config))
 	const {
@@ -78,6 +80,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			stdTTL: DEFAULT_CACHE_TTLS.USER_DEVICES, // 5 minutes
 			useClones: false
 		})
+
+	// Initialize message retry manager if enabled
+	const messageRetryManager = enableRecentMessageCache ? new MessageRetryManager(logger) : null
 
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async (forceGet = false) => {
@@ -640,6 +645,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			logger.debug({ msgId }, `sending message to ${participants.length} devices`)
 
 			await sendNode(stanza)
+
+			// Add message to retry cache if enabled
+			if (messageRetryManager && !participant) {
+				messageRetryManager.addRecentMessage(destinationJid, msgId, message)
+			}
 		})
 
 		return msgId
@@ -733,6 +743,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		sendPeerDataOperationMessage,
 		createParticipantNodes,
 		getUSyncDevices,
+		messageRetryManager,
 		updateMediaMessage: async (message: proto.IWebMessageInfo) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!
