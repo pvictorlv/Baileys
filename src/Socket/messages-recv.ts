@@ -214,7 +214,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
-		if (retryCount === 1) {
+		if (retryCount <= 2) {
 			//request a resend via phone
 			const msgId = await requestPlaceholderResend(msgKey)
 			logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId}`)
