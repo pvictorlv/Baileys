@@ -225,12 +225,14 @@ export async function shouldRecreateSession(
 
 		// Don't recreate if retry count < 2 (whatsmeow logic)
 		if (retryCount < 2) {
+			logger?.info({jid, retryCount}, 'Retry count < 2, not recreating session yet')
 			return {reason: '', recreate: false, shouldFetchPreKeys: false}
 		}
 
 		// Check timeout for recreation (whatsmeow uses 1 hour)
 		const lastRecreate = sessionRecreateHistory.get(jid)
 		if (!lastRecreate || now - lastRecreate > DECRYPTION_RETRY_CONFIG.sessionRecreateTimeout) {
+			logger?.info({jid, retryCount}, 'Recreating session due to retry count and timeout')
 			sessionRecreateHistory.set(jid, now)
 			return {
 				reason: 'retry count > 1 and over an hour since last recreation',
@@ -292,6 +294,9 @@ export function incrementRetryCount(messageKey: string): number {
 	const state = getMessageRetryState(messageKey)
 	state.retryCount++
 	state.lastRetryTime = Date.now()
+
+	messageRetryStates.set(messageKey, state)
+
 	return state.retryCount
 }
 
