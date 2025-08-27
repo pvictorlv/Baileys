@@ -491,8 +491,8 @@ export const addTransactionCapability = (
 		},
 		isInTransaction,
 		...(state.clear ? { clear: state.clear } : {}),
-		async transaction(work) {
-			return transactionMutex.acquire().then(async releaseTxMutex => {
+		async transaction(work, key) {
+			return getKeyTypeMutex(key).acquire().then(async releaseTxMutex => {
 				let result: Awaited<ReturnType<typeof work>>
 				try {
 					transactionsInProgress += 1

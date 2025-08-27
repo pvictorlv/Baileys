@@ -591,7 +591,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 						}
 					}
 				}
-			})
+			}, authState.creds.me?.id || "default")
 
 			const { onMutation } = newAppStateChunkHandler(isInitialSync)
 			for (const key in globalMutationMap) {
@@ -775,7 +775,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				await query(node)
 
 				await authState.keys.set({ 'app-state-sync-version': { [name]: state } })
-			})
+			}, authState.creds.me?.id || "default")
 		})
 
 		if (config.emitOwnEvents) {

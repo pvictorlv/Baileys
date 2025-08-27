@@ -11,7 +11,7 @@ import {LRUCache} from "lru-cache";
 import {LIDMappingStore} from "./lid-mapping";
 
 export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository {
-	const lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction)
+	const lidMapping = new LIDMappingStore(auth)
 	const storage = signalStorage(auth, lidMapping)
 	// Simple operation-level deduplication (5 minutes)
 	const recentMigrations = new LRUCache<string, boolean>({
@@ -28,7 +28,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				return cipher.decrypt(msg)
-			})
+			}, auth.creds.me?.id || 'default')
 		},
 
 		async processSenderKeyDistributionMessage({ item, authorJid }) {
@@ -55,7 +55,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				}
 
 				await builder.process(senderName, senderMsg)
-			})
+			}, auth.creds.me?.id || 'default')
 		},
 		async decryptMessage({ jid, type, ciphertext }) {
 			const addr = jidToSignalProtocolAddress(jid)
@@ -74,7 +74,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				}
 
 				return result
-			})
+			}, auth.creds.me?.id || 'default')
 		},
 		async encryptMessage({ jid, data }) {
 			// LID SINGLE SOURCE OF TRUTH: Always prefer LID when available
@@ -112,7 +112,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				const { type: sigType, body } = await cipher.encrypt(data)
 				const type = sigType === 3 ? 'pkmsg' : 'msg'
 				return { type, ciphertext: Buffer.from(body, 'binary') }
-			})
+			}, auth.creds.me?.id || 'default')
 		},
 		async encryptGroupMessage({ group, meId, data }) {
 			const senderName = jidToSignalSenderKeyName(group, meId)
@@ -143,7 +143,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 			// Use transaction to ensure atomicity
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				await cipher.initOutgoing(session)
-			})
+			}, auth.creds.me?.id || 'default')
 		},
 		jidToSignalProtocolAddress(jid) {
 			return jidToSignalProtocolAddress(jid).toString()
@@ -178,7 +178,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 
 			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
 				await auth.keys.set({ session: { [addr.toString()]: null } })
-			})
+			}, auth.creds.me?.id || 'default')
 		},
 
 		async migrateSession(fromJid: string, toJid: string) {
@@ -228,7 +228,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 				}
 
 				recentMigrations.set(migrationKey, true)
-			})
+			}, auth.creds.me?.id || 'default')
 		},
 
 		async encryptMessageWithWire({ encryptionJid, wireJid, data }) {

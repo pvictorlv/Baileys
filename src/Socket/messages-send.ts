@@ -1054,7 +1054,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			if (messageRetryManager && !participant) {
 				messageRetryManager.addRecentMessage(destinationJid, msgId, message)
 			}
-		})
+		}, meId)
 
 		return msgId
 	}

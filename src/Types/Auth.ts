@@ -31,6 +31,7 @@ export type SignalCreds = {
 	readonly signedIdentityKey: KeyPair
 	readonly signedPreKey: SignedKeyPair
 	readonly registrationId: number
+	me?: Contact
 }
 
 export type AccountSettings = {
@@ -45,7 +46,6 @@ export type AuthenticationCreds = SignalCreds & {
 	readonly pairingEphemeralKeyPair: KeyPair
 	advSecretKey: string
 
-	me?: Contact
 	account?: proto.IADVSignedDeviceIdentity
 	signalIdentities?: SignalIdentity[]
 	myAppStateKeyId?: string
@@ -88,7 +88,7 @@ export type SignalKeyStore = {
 
 export type SignalKeyStoreWithTransaction = SignalKeyStore & {
 	isInTransaction: () => boolean
-	transaction<T>(exec: () => Promise<T>): Promise<T>
+	transaction<T>(exec: () => Promise<T>, key: string): Promise<T>
 }
 
 export type TransactionCapabilityOptions = {
