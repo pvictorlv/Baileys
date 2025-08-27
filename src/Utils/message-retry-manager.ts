@@ -3,7 +3,7 @@ import { WAMessageKey } from '../Types'
 import { ILogger } from './logger'
 
 /** Number of sent messages to cache in memory for handling retry receipts */
-const RECENT_MESSAGES_SIZE = 256
+const RECENT_MESSAGES_SIZE = 512
 
 /** Timeout for session recreation - 1 hour */
 const RECREATE_SESSION_TIMEOUT = 60 * 60 * 1000 // 1 hour in milliseconds

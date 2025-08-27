@@ -191,9 +191,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			try {
 				// Check if we have a session with this JID
 				const sessionId = signalRepository.jidToSignalProtocolAddress(fromJid)
-				const { [sessionId]: sessionData } = await authState.keys.get('session', [sessionId])
-				const hasSession = !!sessionData
-				const result = messageRetryManager.shouldRecreateSession(fromJid, retryCount, hasSession)
+				const hasSession = await signalRepository.validateSession(fromJid)
+				const result = messageRetryManager.shouldRecreateSession(fromJid, retryCount, hasSession.exists)
 				shouldRecreateSession = result.recreate
 				recreateReason = result.reason
 				
@@ -664,9 +663,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (enableAutoSessionRecreation && messageRetryManager) {
 			try {
 				const sessionId = signalRepository.jidToSignalProtocolAddress(participant)
-				const { [sessionId]: sessionData } = await authState.keys.get('session', [sessionId])
-				const hasSession = !!sessionData
-				const result = messageRetryManager.shouldRecreateSession(participant, retryCount, hasSession)
+				const hasSession = await signalRepository.validateSession(participant)
+				const result = messageRetryManager.shouldRecreateSession(participant, retryCount, hasSession.exists)
 				shouldRecreateSession = result.recreate
 				recreateReason = result.reason
 				
