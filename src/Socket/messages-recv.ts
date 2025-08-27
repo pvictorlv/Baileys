@@ -937,6 +937,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			}
 		}
 
+		if (msg.key?.remoteJid && msg.key?.id && messageRetryManager) {
+			messageRetryManager.addRecentMessage(msg.key.remoteJid, msg.key.id, msg.message!)
+			logger.debug(
+				{
+					jid: msg.key.remoteJid,
+					id: msg.key.id
+				},
+				'Added message to recent cache for retry receipts'
+			)
+		}
+
 		try {
 			await Promise.all([
 				processingMutex.mutex(async () => {
@@ -947,7 +958,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							return sendMessageAck(node, NACK_REASONS.ParsingError)
 						}
 
-						retryMutex.mutex(async () => {
+						return retryMutex.mutex(async () => {
 							if (ws.isOpen) {
 								if (getBinaryNodeChild(node, 'unavailable')) {
 									return
