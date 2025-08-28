@@ -176,16 +176,37 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		const {key: msgKey} = fullMessage
 		const msgId = msgKey.id!
 
-		const key = `${msgId}:${msgKey?.participant}`
-		let retryCount = msgRetryCache.get<number>(key) || 0
-		if (retryCount >= maxMsgRetryCount) {
-			logger.debug({retryCount, msgId}, 'reached retry limit, clearing')
-			msgRetryCache.del(key)
-			return
+		// Use new retry manager if available
+		if (messageRetryManager) {
+			// Check if we've exceeded max retries using the new system
+			if (messageRetryManager.hasExceededMaxRetries(msgId)) {
+				logger.debug({msgId}, 'reached retry limit with new retry manager, clearing')
+				messageRetryManager.markRetryFailed(msgId)
+				return
+			}
+			
+			// Increment retry count using new system
+			const retryCount = messageRetryManager.incrementRetryCount(msgId)
+			
+			// Use the new retry count for the rest of the logic
+			const key = `${msgId}:${msgKey?.participant}`
+			msgRetryCache.set(key, retryCount)
+		} else {
+			// Fallback to old system
+			const key = `${msgId}:${msgKey?.participant}`
+			let retryCount = msgRetryCache.get<number>(key) || 0
+			if (retryCount >= maxMsgRetryCount) {
+				logger.debug({retryCount, msgId}, 'reached retry limit, clearing')
+				msgRetryCache.del(key)
+				return
+			}
+
+			retryCount += 1
+			msgRetryCache.set(key, retryCount)
 		}
 
-		retryCount += 1
-		msgRetryCache.set(key, retryCount)
+		const key = `${msgId}:${msgKey?.participant}`
+		const retryCount = msgRetryCache.get<number>(key) || 1
 
 		const {account, signedPreKey, signedIdentityKey: identityKey} = authState.creds
 		const fromJid = node.attrs.from!
@@ -215,9 +236,22 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		}
 
 		if (retryCount <= 2) {
-			//request a resend via phone
-			const msgId = await requestPlaceholderResend(msgKey)
-			logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId}`)
+			// Use new retry manager for phone requests if available
+			if (messageRetryManager) {
+				// Schedule phone request with delay (like whatsmeow)
+				messageRetryManager.schedulePhoneRequest(msgId, async () => {
+					try {
+						const msgId = await requestPlaceholderResend(msgKey)
+						logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId} (scheduled)`)
+					} catch (error) {
+						logger.warn({error, msgId}, 'failed to send scheduled phone request')
+					}
+				})
+			} else {
+				// Fallback to immediate request
+				const msgId = await requestPlaceholderResend(msgKey)
+				logger.debug(`sendRetryRequest: requested placeholder resend for message ${msgId}`)
+			}
 		}
 
 		const deviceIdentity = encodeSignedDeviceIdentity(account!, true)
@@ -649,10 +683,11 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						cachedMsg = messageRetryManager.getRecentMessage(secondary, id)
 					}
 				}
-				messageRetryManager.getRecentMessage(remoteJid, id)
 				if (cachedMsg) {
 					msg = cachedMsg.message
 					logger.debug({jid: remoteJid, id}, 'found message in retry cache')
+					// Mark retry as successful since we found the message
+					messageRetryManager.markRetrySuccess(id)
 				}
 			}
 
@@ -661,6 +696,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msg = await getMessage({...key, id})
 				if (msg) {
 					logger.debug({jid: remoteJid, id}, 'found message via getMessage')
+					// Also mark as successful if found via getMessage
+					if (messageRetryManager) {
+						messageRetryManager.markRetrySuccess(id)
+					}
 				}
 			}
 
@@ -1443,7 +1482,8 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			try {
 				messageRetryManager.cleanupSessionHistory()
 				const stats = messageRetryManager.getCacheStats()
-				logger.debug(stats, 'cleaned up retry manager caches')
+				const retryStats = messageRetryManager.getRetryStatistics()
+				logger.debug({...stats, retryStats}, 'cleaned up retry manager caches')
 			} catch (error) {
 				logger.warn({error}, 'failed to cleanup retry manager caches')
 			}
@@ -1452,9 +1492,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	// Cleanup on disconnect
 	ev.on('connection.update', ({connection}) => {
-		if (connection === 'close' && cleanupInterval) {
-			clearInterval(cleanupInterval)
-			cleanupInterval = undefined
+		if (connection === 'close') {
+			if (cleanupInterval) {
+				clearInterval(cleanupInterval)
+				cleanupInterval = undefined
+			}
+			// Cancel all pending phone requests on disconnect
+			if (messageRetryManager) {
+				messageRetryManager.cancelAllPendingPhoneRequests()
+			}
 		}
 	})
 

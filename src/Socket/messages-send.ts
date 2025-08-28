@@ -1052,7 +1052,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			// Add message to retry cache if enabled
 			if (messageRetryManager && !participant) {
-				messageRetryManager.addRecentMessage(destinationJid, msgId, message)
+				// Extract media key if this is a media message
+				let mediaKey: Uint8Array | undefined
+				const mediaMessage = message.imageMessage || message.videoMessage || message.audioMessage || 
+									message.documentMessage || message.stickerMessage
+				if (mediaMessage && mediaMessage.mediaKey) {
+					mediaKey = new Uint8Array(mediaMessage.mediaKey)
+				}
+				
+				messageRetryManager.addRecentMessage(destinationJid, msgId, message, mediaKey)
 			}
 		}, meId)
 
