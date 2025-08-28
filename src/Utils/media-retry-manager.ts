@@ -1,6 +1,7 @@
 import { createHmac, randomBytes } from 'crypto'
 import { proto } from '../../WAProto'
 import { WAMessageKey } from '../Types'
+import { aesDecryptGCM, aesEncryptGCM } from './crypto'
 import { ILogger } from './logger'
 
 export interface MediaRetryRequest {
@@ -13,6 +14,7 @@ export interface MediaRetryResponse {
 	messageId: string
 	success: boolean
 	directPath?: string
+	result?: proto.MediaRetryNotification.ResultType
 	error?: string
 }
 
@@ -58,33 +60,31 @@ export class MediaRetryManager {
 	}
 
 	/**
-	 * Encrypt media retry receipt (mock implementation for testing)
+	 * Encrypt media retry receipt using AES-GCM (based on WhatsmeOW implementation)
 	 */
-	private encryptMediaRetryReceipt(messageId: string, mediaKey: Uint8Array): EncryptedMediaRetryData {
+	encryptMediaRetryReceipt(messageId: string, mediaKey: Uint8Array): EncryptedMediaRetryData {
 		// Create server error receipt protobuf
-		const receipt = {
+		const receipt = proto.ServerErrorReceipt.create({
 			stanzaId: messageId
-		}
+		})
 		
-		// Mock encryption - in production this would use proper AES-GCM with the media key
-		const plaintext = Buffer.from(JSON.stringify(receipt), 'utf8')
+		// Marshal protobuf to bytes
+		const plaintext = proto.ServerErrorReceipt.encode(receipt).finish()
+		
 		const iv = randomBytes(12)
-		
-		// Simple XOR "encryption" for testing purposes
 		const key = this.getMediaRetryKey(mediaKey)
-		const ciphertext = Buffer.alloc(plaintext.length)
-		for (let i = 0; i < plaintext.length; i++) {
-			ciphertext[i] = plaintext[i] ^ key[i % key.length]
-		}
+		
+		// AES-GCM encryption using Baileys crypto utils
+		const encryptedData = aesEncryptGCM(plaintext, key, iv, Buffer.from(messageId, 'utf8'))
 		
 		return {
-			ciphertext: new Uint8Array(ciphertext),
+			ciphertext: new Uint8Array(encryptedData),
 			iv: new Uint8Array(iv)
 		}
 	}
 
 	/**
-	 * Decrypt media retry notification (mock implementation for testing)
+	 * Decrypt media retry notification using AES-GCM (based on WhatsmeOW implementation)
 	 */
 	decryptMediaRetryNotification(
 		messageId: string, 
@@ -95,18 +95,20 @@ export class MediaRetryManager {
 		try {
 			const key = this.getMediaRetryKey(mediaKey)
 			
-			// Simple XOR "decryption" for testing purposes
-			const plaintext = Buffer.alloc(ciphertext.length)
-			for (let i = 0; i < ciphertext.length; i++) {
-				plaintext[i] = ciphertext[i] ^ key[i % key.length]
-			}
+			// AES-GCM decryption using Baileys crypto utils
+			const plaintext = aesDecryptGCM(Buffer.from(ciphertext), key, Buffer.from(iv), Buffer.from(messageId, 'utf8'))
 			
-			const decrypted = JSON.parse(plaintext.toString('utf8'))
+			// Decode protobuf
+			const notification = proto.MediaRetryNotification.decode(plaintext)
 			
 			return {
 				messageId,
-				success: true,
-				directPath: decrypted.directPath
+				success: notification.result === proto.MediaRetryNotification.ResultType.SUCCESS,
+				directPath: notification.directPath || undefined,
+				result: notification.result || proto.MediaRetryNotification.ResultType.GENERAL_ERROR,
+				error: notification.result !== proto.MediaRetryNotification.ResultType.SUCCESS 
+					? `Media retry failed with result: ${notification.result}` 
+					: undefined
 			}
 		} catch (error) {
 			this.logger.warn(`Failed to decrypt media retry notification for ${messageId}: ${error}`)

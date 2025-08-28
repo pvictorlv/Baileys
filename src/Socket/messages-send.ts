@@ -31,6 +31,7 @@ import {
 	parseAndInjectE2ESessions,
 	unixTimestampSeconds
 } from '../Utils'
+import { MediaRetryManager } from '../Utils/media-retry-manager'
 import { getUrlInfo } from '../Utils/link-preview'
 import {
 	areJidsSameUser,
@@ -87,6 +88,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	// Initialize message retry manager if enabled
 	const messageRetryManager = enableRecentMessageCache ? new MessageRetryManager(logger) : null
+	
+	// Initialize media retry manager
+	const mediaRetryManager = new MediaRetryManager(logger)
 
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async (forceGet = false) => {
@@ -1141,6 +1145,55 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	const waitForMsgMediaUpdate = bindWaitForEvent(ev, 'messages.media-update')
 
+	/**
+	 * Send media retry receipt to request re-upload of media from phone
+	 * Based on WhatsmeOW implementation
+	 */
+	const sendMediaRetryReceipt = async (messageInfo: { id: string; remoteJid: string; fromMe: boolean; participant?: string }, mediaKey: Uint8Array) => {
+		if (!authState.creds.me?.id) {
+			throw new Boom('Not logged in', { statusCode: 401 })
+		}
+
+		// Use MediaRetryManager to encrypt the receipt
+		if (!mediaRetryManager) {
+			throw new Boom('Media retry manager not available', { statusCode: 500 })
+		}
+
+		const encryptedData = mediaRetryManager.encryptMediaRetryReceipt(messageInfo.id, mediaKey)
+		
+		const ownId = jidNormalizedUser(authState.creds.me.id)
+		
+		const rmrAttrs: BinaryNodeAttributes = {
+			jid: messageInfo.remoteJid,
+			from_me: messageInfo.fromMe.toString()
+		}
+		
+		if (messageInfo.participant) {
+			rmrAttrs.participant = messageInfo.participant
+		}
+
+		const encryptedRequest: BinaryNode[] = [
+			{ tag: 'enc_p', attrs: {}, content: encryptedData.ciphertext },
+			{ tag: 'enc_iv', attrs: {}, content: encryptedData.iv }
+		]
+
+		const receiptNode: BinaryNode = {
+			tag: 'receipt',
+			attrs: {
+				id: messageInfo.id,
+				to: ownId,
+				type: 'server-error'
+			},
+			content: [
+				{ tag: 'encrypt', attrs: {}, content: encryptedRequest },
+				{ tag: 'rmr', attrs: rmrAttrs, content: undefined }
+			]
+		}
+
+		await sock.sendNode(receiptNode)
+		logger.info({ messageId: messageInfo.id }, 'sent media retry receipt')
+	}
+
 	return {
 		...sock,
 		getPrivacyTokens,
@@ -1156,6 +1209,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		createParticipantNodes,
 		getUSyncDevices,
 		messageRetryManager,
+		mediaRetryManager,
+		sendMediaRetryReceipt,
 		updateMediaMessage: async (message: proto.IWebMessageInfo) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!

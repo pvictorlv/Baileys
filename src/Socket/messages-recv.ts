@@ -484,6 +484,20 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 			case 'mediaretry':
 				const event = decodeMediaRetryNode(node)
 				ev.emit('messages.media-update', [event])
+				
+				// Also emit the new media retry event for enhanced handling
+				const rmrNode = getBinaryNodeChild(node, 'rmr')!
+				const mediaRetryEvent = {
+					messageId: node.attrs.id,
+					chatId: rmrNode.attrs.jid,
+					fromMe: rmrNode.attrs.from_me === 'true',
+					senderId: rmrNode.attrs.participant,
+					timestamp: +(node.attrs.t || Date.now()),
+					ciphertext: event.media?.ciphertext,
+					iv: event.media?.iv,
+					error: event.error ? { code: +(getBinaryNodeChild(node, 'error')?.attrs.code || 0) } : undefined
+				}
+				ev.emit('messages.media-retry', mediaRetryEvent)
 				break
 			case 'encrypt':
 				await handleEncryptNotification(node)
