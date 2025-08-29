@@ -41,16 +41,6 @@ export type BaileysEventMap = {
 	'messages.delete': { keys: WAMessageKey[] } | { jid: string; all: true }
 	'messages.update': WAMessageUpdate[]
 	'messages.media-update': { key: WAMessageKey; media?: { ciphertext: Uint8Array; iv: Uint8Array }; error?: Boom }[]
-	'messages.media-retry': { 
-		messageId: string
-		chatId: string
-		fromMe: boolean
-		senderId?: string
-		ciphertext?: Uint8Array
-		iv?: Uint8Array
-		error?: { code: number }
-		timestamp: number
-	}
 	/**
 	 * add/update the given messages. If they were received while the connection was online,
 	 * the update will have type: "notify"
