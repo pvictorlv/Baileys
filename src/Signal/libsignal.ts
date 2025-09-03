@@ -15,7 +15,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 	const storage = signalStorage(auth, lidMapping)
 	// Simple operation-level deduplication (5 minutes)
 	const recentMigrations = new LRUCache<string, boolean>({
-		ttl: 5 * 60 * 1000,
+		ttl: 30 * 60 * 1000,
 		ttlAutopurge: true,
 		updateAgeOnGet: true,
 	})

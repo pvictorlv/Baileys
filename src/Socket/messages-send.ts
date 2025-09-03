@@ -776,6 +776,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}: MessageRelayOptions
 	) => {
 		const meId = authState.creds.me!.id
+		const meLid = authState.creds.me?.lid
 
 		let shouldIncludeDeviceIdentity = false
 
@@ -786,14 +787,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const isLid = server === 'lid'
 		const isNewsletter = server === 'newsletter'
 
+		// Keep user's original JID choice for envelope addressing
+		const finalJid = jid
+
+		// ADDRESSING CONSISTENCY: Match own identity to conversation context
+		let ownId = meId
+		if (isLid && meLid) {
+			ownId = meLid
+			logger.debug({ to: jid, ownId }, 'Using LID identity for @lid conversation')
+		} else {
+			logger.debug({ to: jid, ownId }, 'Using PN identity for @s.whatsapp.net conversation')
+		}
+
 		msgId = msgId || generateMessageIDV2(sock.user?.id)
 		useUserDevicesCache = useUserDevicesCache !== false
 		useCachedGroupMetadata = useCachedGroupMetadata !== false && !isStatus
 
 		const participants: BinaryNode[] = []
-		const destinationJid = !isStatus ? jidEncode(user, isLid ? 'lid' : isGroup ? 'g.us' : 's.whatsapp.net') : statusJid
+		const destinationJid = !isStatus ? finalJid : statusJid
 		const binaryNodeContent: BinaryNode[] = []
-		const devices: JidWithDevice[] = []
+		const devices: DeviceWithWireJid[] = []
 
 		const meMsg: proto.IMessage = {
 			deviceSentMessage: {
@@ -814,7 +827,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			const { user, device } = jidDecode(participant.jid)!
-			devices.push({ user, device })
+			devices.push({
+				user,
+				device,
+				wireJid: participant.jid // Use the participant JID as wire JID
+			})
 		}
 
 		await authState.keys.transaction(async () => {
@@ -880,9 +897,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 
 					if (!isStatus) {
+						const groupAddressingMode = groupData?.addressingMode || (isLid ? 'lid' : 'pn')
+
 						additionalAttributes = {
 							...additionalAttributes,
-							addressing_mode: groupData?.addressingMode || 'pn'
+							addressing_mode: groupAddressingMode
 						}
 					}
 
@@ -898,20 +917,26 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				const bytes = encodeWAMessage(patched)
 
+				// This should match the group's addressing mode and conversation context
+				const groupAddressingMode = groupData?.addressingMode || (isLid ? 'lid' : 'pn')
+				const groupSenderIdentity = groupAddressingMode === 'lid' && meLid ? meLid : meId
+
 				const { ciphertext, senderKeyDistributionMessage } = await signalRepository.encryptGroupMessage({
 					group: destinationJid,
 					data: bytes,
-					meId
+					meId: groupSenderIdentity
 				})
 
 				const senderKeyJids: string[] = []
 				// ensure a connection is established with every device
-				for (const { user, device } of devices) {
-					const jid = jidEncode(user, groupData?.addressingMode === 'lid' ? 'lid' : 's.whatsapp.net', device)
-					if (!senderKeyMap[jid] || !!participant) {
-						senderKeyJids.push(jid)
+				for (const device of devices) {
+					// This preserves the LID migration results from getUSyncDevices
+					const deviceJid = device.wireJid
+					const hasKey = !!senderKeyMap[deviceJid]
+					if (!hasKey || !!participant) {
+						senderKeyJids.push(deviceJid)
 						// store that this person has had the sender keys sent to them
-						senderKeyMap[jid] = true
+						senderKeyMap[deviceJid] = true
 					}
 				}
 
@@ -943,47 +968,85 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 				await authState.keys.set({ 'sender-key-memory': { [jid]: senderKeyMap } })
 			} else {
-				const { user: meUser } = jidDecode(meId)!
+				const { user: ownUser } = jidDecode(ownId)!
 
 				if (!participant) {
-					devices.push({ user })
-					if (user !== meUser) {
-						devices.push({ user: meUser })
+					const targetUserServer = isLid ? 'lid' : 's.whatsapp.net'
+					devices.push({
+						user,
+						device: 0,
+						wireJid: jidEncode(user, targetUserServer, 0)
+					})
+
+					// Own user matches conversation addressing mode
+					if (user !== ownUser) {
+						const ownUserServer = isLid ? 'lid' : 's.whatsapp.net'
+						const ownUserForAddressing = isLid && meLid ? jidDecode(meLid)!.user : jidDecode(meId)!.user
+
+						devices.push({
+							user: ownUserForAddressing,
+							device: 0,
+							wireJid: jidEncode(ownUserForAddressing, ownUserServer, 0)
+						})
 					}
 
+
 					if (additionalAttributes?.['category'] !== 'peer') {
-						const additionalDevices = await getUSyncDevices([meId, jid], !!useUserDevicesCache, true)
-						devices.push(...additionalDevices)
+						// Clear placeholders and enumerate actual devices
+						devices.length = 0
+
+						// Use conversation-appropriate sender identity
+						const senderIdentity =
+							isLid && meLid
+								? jidEncode(jidDecode(meLid)?.user!, 'lid', undefined)
+								: jidEncode(jidDecode(meId)?.user!, 's.whatsapp.net', undefined)
+
+						// Enumerate devices for sender and target with consistent addressing
+						const sessionDevices = await getUSyncDevices([senderIdentity, jid], false, false)
+						devices.push(...sessionDevices)
+
+						logger.debug(
+							{
+								deviceCount: devices.length,
+								devices: devices.map(d => `${d.user}:${d.device}@${jidDecode(d.wireJid)?.server}`)
+							},
+							'Device enumeration complete with unified addressing'
+						)
 					}
 				}
 
-				const allJids: string[] = []
 				const meJids: string[] = []
 				const otherJids: string[] = []
-				for (const { user, device } of devices) {
-					const isMe = user === meUser
-					const jid = jidEncode(
-						isMe && isLid ? authState.creds?.me?.lid!.split(':')[0] || user : user,
-						isLid ? 'lid' : 's.whatsapp.net',
-						device
-					)
+				const { user: mePnUser } = jidDecode(meId)!
+				const { user: meLidUser } = meLid ? jidDecode(meLid)! : { user: null }
+
+				for (const { user, wireJid } of devices) {
+					const isExactSenderDevice = wireJid === meId || (meLid && wireJid === meLid)
+					if (isExactSenderDevice) {
+						logger.debug({ wireJid, meId, meLid }, 'Skipping exact sender device (whatsmeow pattern)')
+						continue
+					}
+
+					// Check if this is our device (could match either PN or LID user)
+					const isMe = user === mePnUser || (meLidUser && user === meLidUser)
+
+					const jid = wireJid
 					if (isMe) {
 						meJids.push(jid)
 					} else {
 						otherJids.push(jid)
 					}
-
-					allJids.push(jid)
 				}
 
-				await assertSessions(allJids, false)
+				await assertSessions([...otherJids, ...meJids], false)
 
 				const [
 					{ nodes: meNodes, shouldIncludeDeviceIdentity: s1 },
 					{ nodes: otherNodes, shouldIncludeDeviceIdentity: s2 }
 				] = await Promise.all([
-					createParticipantNodes(meJids, meMsg, extraAttrs),
-					createParticipantNodes(otherJids, message, extraAttrs)
+					// For own devices: use DSM if available (1:1 chats only)
+					createParticipantNodes(meJids, meMsg || message, extraAttrs),
+					createParticipantNodes(otherJids, message, extraAttrs, meMsg)
 				])
 				participants.push(...meNodes)
 				participants.push(...otherNodes)
@@ -1010,6 +1073,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				tag: 'message',
 				attrs: {
 					id: msgId,
+					to: destinationJid,
 					type: getMessageType(message),
 					...(additionalAttributes || {})
 				},
@@ -1152,6 +1216,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!
 			const meId = authState.creds.me!.id
+			const meLid = authState.creds.me?.lid
+
+			// ADDRESSING CONSISTENCY: Keep envelope addressing as user provided, handle LID migration in encryption
 			const node = await encryptMediaRetryRequest(message.key, mediaKey, meId)
 
 			let error: Error | undefined = undefined
