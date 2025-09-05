@@ -105,10 +105,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			if (lidForPN && lidForPN.includes('@lid')) {
 				// Check if we have a session for the LID
-				const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
-				const lidSessions = await authState.keys.get('session', [lidSignalId])
-
-				if (lidSessions[lidSignalId]) {
+				const validate =await signalRepository.validateSession(lidForPN);
+				if (validate.exists) {
 					// Migrate to LID
 					jid = lidForPN
 					logger.debug({ originalJid, migratedJid: jid, context }, 'Auto-migrated JID to LID')
