@@ -8,7 +8,7 @@ import {
 	MessageReceiptType,
 	MessageRelayOptions,
 	MiscMessageGenerationOptions,
-	SocketConfig,
+	SocketConfig, WAMessage,
 	WAMessageKey
 } from '../Types'
 import {
@@ -1354,10 +1354,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					options: config.options,
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
-				})
+				}) as WAMessage;
+
 				if (isLidUser(jid)) {
 					const lidMapping = signalRepository.getLIDMappingStore()
-					fullMsg.key.senderPn = await lidMapping.getPNForLID(jid);
+					fullMsg.key.senderPn = (await lidMapping.getPNForLID(jid))!;
 				} else {
 					fullMsg.key.senderPn = jid;
 				}

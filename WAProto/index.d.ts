@@ -36135,9 +36135,6 @@ export namespace proto {
         /** MessageKey remoteJid */
         remoteJid?: (string|null);
 
-				/** SenderPn */
-				senderPn?: (string|null);
-
         /** MessageKey fromMe */
         fromMe?: (boolean|null);
 
@@ -36159,9 +36156,6 @@ export namespace proto {
 
         /** MessageKey remoteJid. */
         public remoteJid?: (string|null);
-
-				/** SenderPn */
-				public senderPn?: (string|null);
 
         /** MessageKey fromMe. */
         public fromMe?: (boolean|null);
