@@ -67,7 +67,7 @@ export class LIDMappingStore {
 
 		// Push the PN device ID to the LID to maintain device separation
 		const pnDevice = decoded.device !== undefined ? decoded.device : 0
-		const deviceSpecificLid = `${lidUser}:${pnDevice}@lid`
+		const deviceSpecificLid = `${lidUser}@lid`
 
 		logger.trace(`getLIDForPN: ${pn} → ${deviceSpecificLid} (user mapping with device ${pnDevice})`)
 		return deviceSpecificLid
