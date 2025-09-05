@@ -87,6 +87,56 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 	// Initialize message retry manager if enabled
 	const messageRetryManager = enableRecentMessageCache ? new MessageRetryManager(logger) : null
+	/**
+	 * Auto-migrate JID to LID if available and has session
+	 * @param jid - The original JID to potentially migrate
+	 * @param context - Context for logging (e.g., 'sending', 'relaying')
+	 * @returns The migrated LID or original JID
+	 */
+	const autoMigrateJidToLid = async (jid: string, context: string = 'message'): Promise<string> => {
+		const originalJid = jid
+		if (!isJidUser(jid) || !jid.includes('@s.whatsapp.net')) {
+			return jid
+		}
+
+		try {
+			const lidMapping = signalRepository.getLIDMappingStore()
+			const lidForPN = await lidMapping.getLIDForPN(jid)
+
+			if (lidForPN && lidForPN.includes('@lid')) {
+				// Check if we have a session for the LID
+				const lidSignalId = signalRepository.jidToSignalProtocolAddress(lidForPN)
+				const lidSessions = await authState.keys.get('session', [lidSignalId])
+
+				if (lidSessions[lidSignalId]) {
+					// Migrate to LID
+					jid = lidForPN
+					logger.debug({ originalJid, migratedJid: jid, context }, 'Auto-migrated JID to LID')
+
+					// Migrate the session from PN to LID if not already done
+					try {
+						await signalRepository.migrateSession(originalJid, jid)
+						logger.debug({ fromJid: originalJid, toJid: jid, context }, 'Migrated session from PN to LID')
+
+						// Delete PN session after successful migration
+						try {
+							await signalRepository.deleteSession(originalJid)
+							logger.debug({ deletedPNSession: originalJid, context }, 'Deleted PN session after migration')
+						} catch (deleteError) {
+							logger.warn({ originalJid, error: deleteError, context }, 'Failed to delete PN session after migration')
+						}
+					} catch (migrationError) {
+						logger.warn({ originalJid, jid, error: migrationError, context }, 'Failed to migrate session, continuing with LID')
+					}
+				}
+			}
+		} catch (error) {
+			logger.warn({ originalJid, error, context }, 'Failed to check LID migration, using original JID')
+			jid = originalJid
+		}
+
+		return jid
+	}
 
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async (forceGet = false) => {
@@ -774,7 +824,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			useCachedGroupMetadata,
 			statusJidList
 		}: MessageRelayOptions
-	) => {
+	) => {// Auto-migrate JID to LID if available
+		jid = await autoMigrateJidToLid(jid, 'relaying')
+
 		const meId = authState.creds.me!.id
 		const meLid = authState.creds.me?.lid
 
@@ -1263,6 +1315,9 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			return message
 		},
 		sendMessage: async (jid: string, content: AnyMessageContent, options: MiscMessageGenerationOptions = {}) => {
+			// Auto-migrate JID to LID if available
+			jid = await autoMigrateJidToLid(jid, 'sending')
+
 			const userJid = authState.creds.me!.id
 			if (
 				typeof content === 'object' &&
