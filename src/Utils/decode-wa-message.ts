@@ -10,11 +10,13 @@ import {
 	isJidNewsletter,
 	isJidStatusBroadcast,
 	isJidUser,
-	isLidUser, jidDecode, jidEncode, jidNormalizedUser
+	isLidUser,
+	jidDecode,
+	jidEncode,
+	jidNormalizedUser
 } from '../WABinary'
 import { unpadRandomMax16 } from './generics'
 import { ILogger } from './logger'
-
 
 const getDecryptionJid = async (sender: string, repository: SignalRepository): Promise<string> => {
 	if (!sender.includes('@s.whatsapp.net')) {
@@ -81,7 +83,6 @@ type MessageType =
 	| 'other_status'
 	| 'newsletter'
 
-
 export const extractAddressingContext = (stanza: BinaryNode) => {
 	const addressingMode = stanza.attrs.addressing_mode || 'pn'
 	let senderAlt: string | undefined
@@ -104,12 +105,11 @@ export const extractAddressingContext = (stanza: BinaryNode) => {
 	}
 }
 
-
 /**
  * Decode the received node as a message.
  * @note this will only parse the message, not decrypt it
  */
-export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: string) {
+export async function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: string, repository: SignalRepository) {
 	let msgType: MessageType
 	let chatId: string
 	let author: string
@@ -168,13 +168,19 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	const fromMe = (isLidUser(from) ? isMeLid : isMe)(stanza.attrs.participant || stanza.attrs.from)
 	const pushname = stanza?.attrs?.notify
 
+	let senderPn = stanza?.attrs?.sender_pn
+	if (isLidUser(chatId) && !senderPn) {
+		const lidMapping = repository.getLIDMappingStore()
+		senderPn = (await lidMapping.getLIDForPN(chatId)) || jidNormalizedUser(chatId)
+	}
+
 	const key: WAMessageKey = {
 		remoteJid: chatId,
 		fromMe,
 		id: msgId,
 		peerRecipientLid: stanza?.attrs?.peer_recipient_lid,
 		senderLid: stanza?.attrs?.sender_lid || jidNormalizedUser(chatId),
-		senderPn: stanza?.attrs?.sender_pn || jidNormalizedUser(chatId),
+		senderPn: senderPn,
 		participant,
 		participantPn: stanza?.attrs?.participant_pn,
 		participantLid: stanza?.attrs?.participant_lid,
@@ -199,14 +205,14 @@ export function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: strin
 	}
 }
 
-export const decryptMessageNode = (
+export const decryptMessageNode = async (
 	stanza: BinaryNode,
 	meId: string,
 	meLid: string,
 	repository: SignalRepository,
 	logger: ILogger
 ) => {
-	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
+	const { fullMessage, author, sender } = await decodeMessageNode(stanza, meId, meLid, repository)
 	return {
 		fullMessage,
 		category: stanza.attrs.category,

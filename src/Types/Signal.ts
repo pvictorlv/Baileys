@@ -1,5 +1,5 @@
 import { proto } from '../../WAProto'
-import {LIDMappingStore} from "../Signal/lid-mapping";
+import { LIDMappingStore } from '../Signal/lid-mapping'
 
 type DecryptGroupSignalOpts = {
 	group: string

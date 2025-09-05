@@ -417,7 +417,7 @@ function append<E extends BufferableEvent>(
 				}
 
 				if (data.contactUpdates[contact.id]) {
-					upsert = Object.assign(data.contactUpdates[contact.id]!, trimUndefined(contact)) as Contact
+					upsert = Object.assign(data.contactUpdates[contact.id], trimUndefined(contact)) as Contact
 					delete data.contactUpdates[contact.id]
 				}
 			}
@@ -628,7 +628,7 @@ function consolidateEvents(data: BufferedEventData) {
 
 	const messageUpsertList = Object.values(data.messageUpserts)
 	if (messageUpsertList.length) {
-		const type = messageUpsertList[0]!.type
+		const type = messageUpsertList[0].type
 		map['messages.upsert'] = {
 			messages: messageUpsertList.map(m => m.message),
 			type

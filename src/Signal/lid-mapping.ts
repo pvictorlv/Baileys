@@ -1,4 +1,4 @@
-import type {SignalAuthState, SignalKeyStoreWithTransaction} from '../Types'
+import type { SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
 import logger from '../Utils/logger'
 import { isJidUser, isLidUser, jidDecode } from '../WABinary'
 

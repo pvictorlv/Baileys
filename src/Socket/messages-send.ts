@@ -32,6 +32,7 @@ import {
 	unixTimestampSeconds
 } from '../Utils'
 import { getUrlInfo } from '../Utils/link-preview'
+import { makeKeyedMutex } from '../Utils/make-mutex'
 import {
 	areJidsSameUser,
 	BinaryNode,
@@ -49,7 +50,6 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeGroupsSocket } from './groups'
 import { makeNewsletterSocket, NewsletterSocket } from './newsletter'
-import { makeKeyedMutex } from '../Utils/make-mutex'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -93,7 +93,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	 * @param context - Context for logging (e.g., 'sending', 'relaying')
 	 * @returns The migrated LID or original JID
 	 */
-	const autoMigrateJidToLid = async (jid: string, context: string = 'message'): Promise<string> => {
+	const autoMigrateJidToLid = async (jid: string, context = 'message'): Promise<string> => {
 		const originalJid = jid
 		if (!isJidUser(jid) || !jid.includes('@s.whatsapp.net')) {
 			return jid
@@ -126,7 +126,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							logger.warn({ originalJid, error: deleteError, context }, 'Failed to delete PN session after migration')
 						}
 					} catch (migrationError) {
-						logger.warn({ originalJid, jid, error: migrationError, context }, 'Failed to migrate session, continuing with LID')
+						logger.warn(
+							{ originalJid, jid, error: migrationError, context },
+							'Failed to migrate session, continuing with LID'
+						)
 					}
 				}
 			}
@@ -238,7 +241,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const readType = privacySettings.readreceipts === 'all' ? 'read' : 'read-self'
 		await sendReceipts(keys, readType)
 	}
-
 
 	/** Device info with wire JID format for envelope addressing */
 	type DeviceWithWireJid = JidWithDevice & {
@@ -407,7 +409,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const lidSessions = await authState.keys.get('session', [lidSignalId])
 		return !!lidSessions[lidSignalId]
 	}
-
 
 	const assertSessions = async (jids: string[], force: boolean) => {
 		let didFetchNewSession = false
@@ -824,7 +825,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			useCachedGroupMetadata,
 			statusJidList
 		}: MessageRelayOptions
-	) => {// Auto-migrate JID to LID if available
+	) => {
+		// Auto-migrate JID to LID if available
 		jid = await autoMigrateJidToLid(jid, 'relaying')
 
 		const meId = authState.creds.me!.id
@@ -1041,7 +1043,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 							wireJid: jidEncode(ownUserForAddressing, ownUserServer, 0)
 						})
 					}
-
 
 					if (additionalAttributes?.['category'] !== 'peer') {
 						// Clear placeholders and enumerate actual devices
@@ -1268,7 +1269,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!
 			const meId = authState.creds.me!.id
-			const meLid = authState.creds.me?.lid
 
 			// ADDRESSING CONSISTENCY: Keep envelope addressing as user provided, handle LID migration in encryption
 			const node = await encryptMediaRetryRequest(message.key, mediaKey, meId)

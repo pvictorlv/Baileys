@@ -1,4 +1,5 @@
 import * as libsignal from 'libsignal'
+import { LRUCache } from 'lru-cache'
 import { SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
 import { SignalRepository } from '../Types/Signal'
 import { generateSignalPubKey } from '../Utils'
@@ -7,8 +8,7 @@ import type { SenderKeyStore } from './Group/group_cipher'
 import { SenderKeyName } from './Group/sender-key-name'
 import { SenderKeyRecord } from './Group/sender-key-record'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
-import {LRUCache} from "lru-cache";
-import {LIDMappingStore} from "./lid-mapping";
+import { LIDMappingStore } from './lid-mapping'
 
 export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository {
 	const lidMapping = new LIDMappingStore(auth)
@@ -17,7 +17,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 	const recentMigrations = new LRUCache<string, boolean>({
 		ttl: 30 * 60 * 1000,
 		ttlAutopurge: true,
-		updateAgeOnGet: true,
+		updateAgeOnGet: true
 	})
 
 	const repository: SignalRepository = {
@@ -241,7 +241,7 @@ export function makeLibSignalRepository(auth: SignalAuthState): SignalRepository
 		}
 	}
 
-	return repository;
+	return repository
 }
 
 const jidToSignalProtocolAddress = (jid: string) => {
