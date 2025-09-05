@@ -40,7 +40,7 @@ import {
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isJidGroup,
-	isJidUser,
+	isJidUser, isLidUser,
 	jidDecode,
 	jidEncode,
 	jidNormalizedUser,
@@ -50,7 +50,6 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeGroupsSocket } from './groups'
 import { makeNewsletterSocket, NewsletterSocket } from './newsletter'
-import {isLidUser} from "../../lib";
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -1362,7 +1361,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				} else {
 					fullMsg.key.senderPn = jid;
 				}
-				
+
 				const isDeleteMsg = 'delete' in content && !!content.delete
 				const isEditMsg = 'edit' in content && !!content.edit
 				const isPinMsg = 'pin' in content && !!content.pin
