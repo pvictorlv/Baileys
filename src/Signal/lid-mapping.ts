@@ -93,8 +93,8 @@ export class LIDMappingStore {
 		}
 
 		// Construct device-specific PN JID
-		const lidDevice = decoded.device !== undefined ? decoded.device : 0
-		const pnJid = `${pnUser}:${lidDevice}@s.whatsapp.net`
+		// const lidDevice = decoded.device !== undefined ? decoded.device : 0
+		const pnJid = `${pnUser}@s.whatsapp.net`
 
 		logger.trace(`Found reverse mapping: ${lid} → ${pnJid}`)
 		return pnJid
