@@ -169,9 +169,9 @@ export async function decodeMessageNode(stanza: BinaryNode, meId: string, meLid:
 	const pushname = stanza?.attrs?.notify
 
 	let senderPn = stanza?.attrs?.sender_pn
-	if (isLidUser(chatId) && !senderPn) {
+	if (isLidUser(chatId) && isJidUser(senderPn)) {
 		const lidMapping = repository.getLIDMappingStore()
-		senderPn = (await lidMapping.getLIDForPN(chatId)) || jidNormalizedUser(chatId)
+		senderPn = (await lidMapping.getPNForLID(chatId)) || jidNormalizedUser(chatId)
 	}
 
 	const key: WAMessageKey = {
