@@ -836,6 +836,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							...(msg.key || {})
 						}
 
+
 						msg.participant ??= node.attrs.participant
 						msg.messageTimestamp = +node.attrs.t
 

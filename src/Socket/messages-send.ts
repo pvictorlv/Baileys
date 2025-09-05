@@ -50,6 +50,7 @@ import {
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeGroupsSocket } from './groups'
 import { makeNewsletterSocket, NewsletterSocket } from './newsletter'
+import {isLidUser} from "../../lib";
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -1355,6 +1356,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
 				})
+				if (isLidUser(jid)) {
+					const lidMapping = signalRepository.getLIDMappingStore()
+					fullMsg.key.senderPn = await lidMapping.getPNForLID(jid);
+				} else {
+					fullMsg.key.senderPn = jid;
+				}
+				
 				const isDeleteMsg = 'delete' in content && !!content.delete
 				const isEditMsg = 'edit' in content && !!content.edit
 				const isPinMsg = 'pin' in content && !!content.pin
