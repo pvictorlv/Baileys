@@ -108,7 +108,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				const validate =await signalRepository.validateSession(lidForPN);
 				if (validate.exists) {
 					// Migrate to LID
-					jid = lidForPN
+					jid = jidNormalizedUser(lidForPN)
 					logger.debug({ originalJid, migratedJid: jid, context }, 'Auto-migrated JID to LID')
 
 					return jid;
