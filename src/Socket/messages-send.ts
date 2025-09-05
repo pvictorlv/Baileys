@@ -113,24 +113,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					jid = lidForPN
 					logger.debug({ originalJid, migratedJid: jid, context }, 'Auto-migrated JID to LID')
 
-					// Migrate the session from PN to LID if not already done
-					try {
-						await signalRepository.migrateSession(originalJid, jid)
-						logger.debug({ fromJid: originalJid, toJid: jid, context }, 'Migrated session from PN to LID')
-
-						// Delete PN session after successful migration
-						try {
-							await signalRepository.deleteSession(originalJid)
-							logger.debug({ deletedPNSession: originalJid, context }, 'Deleted PN session after migration')
-						} catch (deleteError) {
-							logger.warn({ originalJid, error: deleteError, context }, 'Failed to delete PN session after migration')
-						}
-					} catch (migrationError) {
-						logger.warn(
-							{ originalJid, jid, error: migrationError, context },
-							'Failed to migrate session, continuing with LID'
-						)
-					}
+					return jid;
 				}
 			}
 		} catch (error) {
