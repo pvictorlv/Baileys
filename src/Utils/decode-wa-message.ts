@@ -46,6 +46,13 @@ const storeMappingFromEnvelope = async (
 export const NO_MESSAGE_FOUND_ERROR_TEXT = 'Message absent from node'
 export const MISSING_KEYS_ERROR_TEXT = 'Key used already or never filled'
 
+// Retry configuration for failed decryption
+export const DECRYPTION_RETRY_CONFIG = {
+	maxRetries: 3,
+	baseDelayMs: 100,
+	sessionRecordErrors: ['No session record', 'SessionError: No session record']
+}
+
 export const NACK_REASONS = {
 	ParsingError: 487,
 	UnrecognizedStanza: 488,
@@ -106,7 +113,7 @@ export const extractAddressingContext = (stanza: BinaryNode) => {
  * Decode the received node as a message.
  * @note this will only parse the message, not decrypt it
  */
-export async function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: string, repository: SignalRepository) {
+export  function decodeMessageNode(stanza: BinaryNode, meId: string, meLid: string) {
 	let msgType: MessageType
 	let chatId: string
 	let author: string
@@ -195,14 +202,14 @@ export async function decodeMessageNode(stanza: BinaryNode, meId: string, meLid:
 	}
 }
 
-export const decryptMessageNode = async (
+export const decryptMessageNode = (
 	stanza: BinaryNode,
 	meId: string,
 	meLid: string,
 	repository: SignalRepository,
 	logger: ILogger
 ) => {
-	const { fullMessage, author, sender } = await decodeMessageNode(stanza, meId, meLid, repository)
+	const { fullMessage, author, sender } = decodeMessageNode(stanza, meId, meLid)
 	return {
 		fullMessage,
 		category: stanza.attrs.category,
@@ -215,6 +222,10 @@ export const decryptMessageNode = async (
 						const cert = proto.VerifiedNameCertificate.decode(content)
 						const details = proto.VerifiedNameCertificate.Details.decode(cert.details!)
 						fullMessage.verifiedBizName = details.verifiedName
+					}
+
+					if (tag === 'unavailable' && attrs.type === 'view_once') {
+						fullMessage.key.isViewOnce = true // TODO: remove from here and add a STUB TYPE
 					}
 
 					if (tag !== 'enc' && tag !== 'plaintext') {
@@ -237,6 +248,7 @@ export const decryptMessageNode = async (
 
 					try {
 						const e2eType = tag === 'plaintext' ? 'plaintext' : attrs.type
+
 						switch (e2eType) {
 							case 'skmsg':
 								msgBuffer = await repository.decryptGroupMessage({
@@ -252,7 +264,6 @@ export const decryptMessageNode = async (
 									type: e2eType,
 									ciphertext: content
 								})
-
 								break
 							case 'plaintext':
 								msgBuffer = content
@@ -273,7 +284,7 @@ export const decryptMessageNode = async (
 									item: msg.senderKeyDistributionMessage
 								})
 							} catch (err) {
-								logger.error({ key: fullMessage.key, err }, 'failed to decrypt message')
+								logger.error({ key: fullMessage.key, err }, 'failed to process sender key distribution message')
 							}
 						}
 
@@ -282,8 +293,18 @@ export const decryptMessageNode = async (
 						} else {
 							fullMessage.message = msg
 						}
-					} catch (err) {
-						logger.error({ key: fullMessage.key, err }, 'failed to decrypt message')
+					} catch (err: any) {
+						const errorContext = {
+							key: fullMessage.key,
+							err,
+							messageType: tag === 'plaintext' ? 'plaintext' : attrs.type,
+							sender,
+							author,
+							isSessionRecordError: isSessionRecordError(err)
+						}
+
+						logger.error(errorContext, 'failed to decrypt message')
+
 						fullMessage.messageStubType = proto.WebMessageInfo.StubType.CIPHERTEXT
 						fullMessage.messageStubParameters = [err.message]
 					}
@@ -297,4 +318,12 @@ export const decryptMessageNode = async (
 			}
 		}
 	}
+}
+
+/**
+ * Utility function to check if an error is related to missing session record
+ */
+function isSessionRecordError(error: any): boolean {
+	const errorMessage = error?.message || error?.toString() || ''
+	return DECRYPTION_RETRY_CONFIG.sessionRecordErrors.some(errorPattern => errorMessage.includes(errorPattern))
 }

@@ -61,7 +61,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		cachedGroupMetadata,
 		enableRecentMessageCache
 	} = config
-	const sock: NewsletterSocket = makeNewsletterSocket(makeGroupsSocket(config))
+	const sock = makeNewsletterSocket(config)
 	const {
 		ev,
 		authState,

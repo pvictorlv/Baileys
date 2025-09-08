@@ -976,7 +976,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							// message was sent by us from a different device
 							type = 'sender'
 							// need to specially handle this case
-							if (isPnUser(msg.key.remoteJid!)) {
+							if (isLidUser(msg.key.remoteJid!) || isLidUser(msg.key.remoteJidAlt)) {
 								participant = author
 							}
 						} else if (!sendActiveReceipts) {
