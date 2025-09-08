@@ -167,11 +167,10 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 	}
 
 	const sendRetryRequest = async (node: BinaryNode, forceIncludeKeys = false) => {
-		const { fullMessage } = await decodeMessageNode(
+		const { fullMessage } = decodeMessageNode(
 			node,
 			authState.creds.me!.id,
-			authState.creds.me!.lid || '',
-			signalRepository
+			authState.creds.me!.lid || ''
 		)
 		const { key: msgKey } = fullMessage
 		const msgId = msgKey.id!
@@ -878,7 +877,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		if (getBinaryNodeChild(node, 'unavailable') && !encNode) {
 			await sendMessageAck(node)
 			const { key } = (
-				await decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '', signalRepository)
+				decodeMessageNode(node, authState.creds.me!.id, authState.creds.me!.lid || '')
 			).fullMessage
 			response = await requestPlaceholderResend(key)
 			if (response === 'RESOLVED') {
