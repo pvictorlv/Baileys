@@ -457,10 +457,15 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				break
 			case 'devices':
 				const devices = getBinaryNodeChildren(child, 'device')
-				if (areJidsSameUser(child.attrs.jid, authState.creds.me!.id)) {
-					const deviceJids = devices.map(d => d.attrs.jid)
-					logger.info({ deviceJids }, 'got my own devices')
+				if (
+					areJidsSameUser(child!.attrs.jid, authState.creds.me!.id) ||
+					areJidsSameUser(child!.attrs.lid, authState.creds.me!.lid)
+				) {
+					const deviceData = devices.map(d => ({ id: d.attrs.jid, lid: d.attrs.lid }))
+					logger.info({ deviceData }, 'my own devices changed')
 				}
+
+				//TODO: drop a new event, add hashes
 
 				break
 			case 'server_sync':
@@ -794,7 +799,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						// correctly set who is asking for the retry
 						key.participant = key.participant || attrs.from
 						const retryNode = getBinaryNodeChild(node, 'retry')
-						if (willSendMessageAgain(ids[0], key.participant)) {
+						if (ids[0] && key.participant && willSendMessageAgain(ids[0], key.participant)) {
 							if (key.fromMe) {
 								try {
 									logger.debug({ attrs, key }, 'recv retry request')
@@ -842,7 +847,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 						msg.participant ??= node.attrs.participant
 						msg.messageTimestamp = +node.attrs.t
 
-						const fullMsg = proto.WebMessageInfo.fromObject(msg)
+						const fullMsg = proto.WebMessageInfo.create(msg as proto.IWebMessageInfo)
 						await upsertMessage(fullMsg, 'append')
 					}
 				})
@@ -1284,14 +1289,14 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 								? Buffer.from(plaintextNode.content, 'binary')
 								: Buffer.from(plaintextNode.content as Uint8Array)
 						const messageProto = proto.Message.decode(contentBuf)
-						const fullMessage = proto.WebMessageInfo.fromObject({
+						const fullMessage = proto.WebMessageInfo.create({
 							key: {
 								remoteJid: from,
 								id: child.attrs.message_id || child.attrs.server_id,
 								fromMe: false
 							},
 							message: messageProto,
-							messageTimestamp: +child.attrs.t
+							messageTimestamp: +child.attrs.t!
 						})
 						await upsertMessage(fullMessage, 'append')
 						logger.info('Processed plaintext newsletter message')
@@ -1411,7 +1416,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 				msg.message = { call: { callKey: Buffer.from(call.id) } }
 			}
 
-			const protoMsg = proto.WebMessageInfo.fromObject(msg)
+			const protoMsg = proto.WebMessageInfo.create(msg)
 			upsertMessage(protoMsg, call.offline ? 'append' : 'notify')
 		}
 	})

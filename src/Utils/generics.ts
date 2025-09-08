@@ -3,7 +3,6 @@ import axios, { AxiosRequestConfig } from 'axios'
 import { createHash, randomBytes } from 'crypto'
 import { platform, release } from 'os'
 import { proto } from '../../WAProto'
-import { version as baileysVersion } from '../Defaults/baileys-version.json'
 import {
 	BaileysEventEmitter,
 	BaileysEventMap,
@@ -14,6 +13,9 @@ import {
 	WAVersion
 } from '../Types'
 import { BinaryNode, getAllBinaryNodeChildren, jidDecode } from '../WABinary'
+
+const baileysVersion = [2, 3000, 1023223821]
+
 
 const PLATFORM_MAP = {
 	aix: 'AIX',

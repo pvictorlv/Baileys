@@ -41,7 +41,7 @@ export const processHistoryMessage = (item: proto.IHistorySync) => {
 					id: chat.id,
 					name: chat.name || undefined,
 					lid: chat.lidJid || undefined,
-					phoneNumber: isPnUser(chat.id) ? chat.id : undefined
+					phoneNumber: chat.pnJid || undefined
 				})
 
 				const msgs = chat.messages || []

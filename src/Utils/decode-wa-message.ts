@@ -1,6 +1,6 @@
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto'
-import { SignalRepository, WAMessageKey } from '../Types'
+import {SignalRepository, WAMessage, WAMessageKey} from '../Types'
 import {
 	areJidsSameUser,
 	BinaryNode,
@@ -177,9 +177,9 @@ export async function decodeMessageNode(stanza: BinaryNode, meId: string, meLid:
 		...(msgType === 'newsletter' && stanza.attrs.server_id ? { server_id: stanza.attrs.server_id } : {})
 	}
 
-	const fullMessage: proto.IWebMessageInfo = {
+	const fullMessage: WAMessage = {
 		key,
-		messageTimestamp: +stanza.attrs.t,
+		messageTimestamp: +stanza.attrs.t!,
 		pushName: pushname,
 		broadcast: isJidBroadcast(from)
 	}
@@ -229,6 +229,12 @@ export const decryptMessageNode = async (
 
 					let msgBuffer: Uint8Array
 
+					const user = isPnUser(sender) ? sender : author // TODO: flaky logic
+					const decryptionJid = await getDecryptionJid(user, repository)
+					if (tag !== 'plaintext') {
+						await storeMappingFromEnvelope(stanza, user, decryptionJid, repository, logger)
+					}
+
 					try {
 						const e2eType = tag === 'plaintext' ? 'plaintext' : attrs.type
 						switch (e2eType) {
@@ -241,16 +247,12 @@ export const decryptMessageNode = async (
 								break
 							case 'pkmsg':
 							case 'msg':
-								const user = isPnUser(sender) ? sender : author
-								const decryptionJid = await getDecryptionJid(user, repository)
-
 								msgBuffer = await repository.decryptMessage({
 									jid: decryptionJid,
 									type: e2eType,
 									ciphertext: content
 								})
 
-								await storeMappingFromEnvelope(stanza, user, decryptionJid, repository, logger)
 								break
 							case 'plaintext':
 								msgBuffer = content

@@ -1,4 +1,4 @@
-syntax = "proto3";
+gen:protobufsyntax = "proto3";
 package proto;
 
 /// WhatsApp Version: 2.3000.1023047013
