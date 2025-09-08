@@ -2,15 +2,16 @@ import NodeCache from '@cacheable/node-cache'
 import { Boom } from '@hapi/boom'
 import { proto } from '../../WAProto'
 import { DEFAULT_CACHE_TTLS, WA_DEFAULT_EPHEMERAL } from '../Defaults'
-import {
+import type {
 	AnyMessageContent,
 	MediaConnInfo,
 	MessageReceiptType,
 	MessageRelayOptions,
 	MiscMessageGenerationOptions,
-	SocketConfig, WAMessage,
+	SocketConfig,
 	WAMessageKey
 } from '../Types'
+import { WAMessageAddressingMode } from '../Types'
 import {
 	aggregateMessageKeysNotFromMe,
 	assertMediaContent,
@@ -31,25 +32,25 @@ import {
 	parseAndInjectE2ESessions,
 	unixTimestampSeconds
 } from '../Utils'
-import { getUrlInfo } from '../Utils/link-preview'
+import { getUrlInfo } from '../Utils'
 import { makeKeyedMutex } from '../Utils/make-mutex'
 import {
 	areJidsSameUser,
-	BinaryNode,
-	BinaryNodeAttributes,
+	type BinaryNode,
+	type BinaryNodeAttributes,
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isJidGroup,
-	isPnUser, isLidUser,
+	isPnUser,
 	jidDecode,
 	jidEncode,
 	jidNormalizedUser,
-	JidWithDevice,
-	S_WHATSAPP_NET, transferDevice
+	type JidWithDevice,
+	S_WHATSAPP_NET,
+	transferDevice
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
-import { makeGroupsSocket } from './groups'
-import { makeNewsletterSocket, NewsletterSocket } from './newsletter'
+import { makeNewsletterSocket } from './newsletter'
 
 export const makeMessagesSocket = (config: SocketConfig) => {
 	const {
@@ -59,7 +60,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		options: axiosOptions,
 		patchMessageBeforeSending,
 		cachedGroupMetadata,
-		enableRecentMessageCache
+		enableRecentMessageCache,
+		maxMsgRetryCount
 	} = config
 	const sock = makeNewsletterSocket(config)
 	const {
@@ -82,45 +84,11 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			useClones: false
 		})
 
+	// Initialize message retry manager if enabled
+	const messageRetryManager = enableRecentMessageCache ? new MessageRetryManager(logger, maxMsgRetryCount) : null
+
 	// Prevent race conditions in Signal session encryption by user
 	const encryptionMutex = makeKeyedMutex()
-
-	// Initialize message retry manager if enabled
-	const messageRetryManager = enableRecentMessageCache ? new MessageRetryManager(logger) : null
-	/**
-	 * Auto-migrate JID to LID if available and has session
-	 * @param jid - The original JID to potentially migrate
-	 * @param context - Context for logging (e.g., 'sending', 'relaying')
-	 * @returns The migrated LID or original JID
-	 */
-	const autoMigrateJidToLid = async (jid: string, context = 'message'): Promise<string> => {
-		const originalJid = jid
-		if (!isPnUser(jid) || !jid.includes('@s.whatsapp.net')) {
-			return jid
-		}
-
-		try {
-			const lidMapping = signalRepository.getLIDMappingStore()
-			const lidForPN = await lidMapping.getLIDForPN(jid)
-
-			if (lidForPN && lidForPN.includes('@lid')) {
-				// Check if we have a session for the LID
-				const validate =await signalRepository.validateSession(lidForPN);
-				if (validate.exists) {
-					// Migrate to LID
-					jid = jidNormalizedUser(lidForPN)
-					logger.debug({ originalJid, migratedJid: jid, context }, 'Auto-migrated JID to LID')
-
-					return jid;
-				}
-			}
-		} catch (error) {
-			logger.warn({ originalJid, error, context }, 'Failed to check LID migration, using original JID')
-			jid = originalJid
-		}
-
-		return jid
-	}
 
 	let mediaConn: Promise<MediaConnInfo>
 	const refreshMediaConn = async (forceGet = false) => {
@@ -136,14 +104,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					},
 					content: [{ tag: 'media_conn', attrs: {} }]
 				})
-				const mediaConnNode = getBinaryNodeChild(result, 'media_conn')
+				const mediaConnNode = getBinaryNodeChild(result, 'media_conn')!
 				const node: MediaConnInfo = {
 					hosts: getBinaryNodeChildren(mediaConnNode, 'host').map(({ attrs }) => ({
-						hostname: attrs.hostname,
-						maxContentLengthBytes: +attrs.maxContentLengthBytes
+						hostname: attrs.hostname!,
+						maxContentLengthBytes: +attrs.maxContentLengthBytes!
 					})),
-					auth: mediaConnNode!.attrs.auth,
-					ttl: +mediaConnNode!.attrs.ttl,
+					auth: mediaConnNode.attrs.auth!,
+					ttl: +mediaConnNode.attrs.ttl!,
 					fetchDate: new Date()
 				}
 				logger.debug('fetched media conn')
@@ -164,10 +132,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		messageIds: string[],
 		type: MessageReceiptType
 	) => {
+		if (!messageIds || messageIds.length === 0) {
+			throw new Boom('missing ids in receipt')
+		}
+
 		const node: BinaryNode = {
 			tag: 'receipt',
 			attrs: {
-				id: messageIds[0]
+				id: messageIds[0]!
 			}
 		}
 		const isReadReceipt = type === 'read' || type === 'read-self'
@@ -340,7 +312,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 			for (const item of extracted) {
 				deviceMap[item.user] = deviceMap[item.user] || []
-				deviceMap[item.user].push(item)
+				deviceMap[item.user]?.push(item)
 			}
 
 			// Process each user's devices as a group for bulk LID migration
@@ -371,7 +343,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			}
 
 			for (const key in deviceMap) {
-				userDevicesCache.set(key, deviceMap[key])
+				userDevicesCache.set(key, deviceMap[key]!)
 			}
 		}
 
@@ -390,7 +362,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const lidSessions = await authState.keys.get('session', [lidSignalId])
 		return !!lidSessions[lidSignalId]
 	}
-
 
 	const assertSessions = async (jids: string[], force: boolean) => {
 		let didFetchNewSession = false
@@ -631,7 +602,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const msgId = await relayMessage(meJid, protocolMessage, {
 			additionalAttributes: {
 				category: 'peer',
-				// eslint-disable-next-line camelcase
+
 				push_priority: 'high_force'
 			}
 		})
@@ -804,11 +775,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			statusJidList
 		}: MessageRelayOptions
 	) => {
-		// Auto-migrate JID to LID if available
-		// jid = await autoMigrateJidToLid(jid, 'relaying')
-
 		const meId = authState.creds.me!.id
 		const meLid = authState.creds.me?.lid
+
+		// ADDRESSING CONSISTENCY: Keep envelope addressing as user provided, handle LID migration in encryption
 
 		let shouldIncludeDeviceIdentity = false
 
@@ -837,6 +807,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 
 		const participants: BinaryNode[] = []
 		const destinationJid = !isStatus ? finalJid : statusJid
+
 		const binaryNodeContent: BinaryNode[] = []
 		const devices: DeviceWithWireJid[] = []
 
@@ -848,7 +819,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			messageContextInfo: message.messageContextInfo
 		}
 
-		const extraAttrs = {}
+		const extraAttrs: BinaryNodeAttributes = {}
 
 		if (participant) {
 			// when the retry request is not for a group
@@ -929,8 +900,8 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 
 					if (!isStatus) {
-						const groupAddressingMode = groupData?.addressingMode || (isLid ? 'lid' : 'pn')
-
+						const groupAddressingMode =
+							groupData?.addressingMode || (isLid ? WAMessageAddressingMode.LID : WAMessageAddressingMode.PN)
 						additionalAttributes = {
 							...additionalAttributes,
 							addressing_mode: groupAddressingMode
@@ -1046,6 +1017,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					}
 				}
 
+				const allJids: string[] = []
 				const meJids: string[] = []
 				const otherJids: string[] = []
 				const { user: mePnUser } = jidDecode(meId)!
@@ -1062,11 +1034,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					const isMe = user === mePnUser || (meLidUser && user === meLidUser)
 
 					const jid = wireJid
+
 					if (isMe) {
 						meJids.push(jid)
 					} else {
 						otherJids.push(jid)
 					}
+
+					allJids.push(jid)
 				}
 
 				await assertSessions([...otherJids, ...meJids], false)
@@ -1095,6 +1070,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					binaryNodeContent.push({
 						tag: 'participants',
 						attrs: {},
+
 						content: participants
 					})
 				}
@@ -1110,6 +1086,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				},
 				content: binaryNodeContent
 			}
+
 			// if the participant to send to is explicitly specified (generally retry recp)
 			// ensure the message is only sent to that person
 			// if a retry receipt is sent to everyone -- it'll fail decryption for everyone else who received the msg
@@ -1157,6 +1134,10 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	const getMessageType = (message: proto.IMessage) => {
 		if (message.pollCreationMessage || message.pollCreationMessageV2 || message.pollCreationMessageV3) {
 			return 'poll'
+		}
+
+		if (message.eventMessage) {
+			return 'event'
 		}
 
 		return 'text'
@@ -1247,8 +1228,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			const content = assertMediaContent(message.message)
 			const mediaKey = content.mediaKey!
 			const meId = authState.creds.me!.id
-
-			// ADDRESSING CONSISTENCY: Keep envelope addressing as user provided, handle LID migration in encryption
 			const node = await encryptMediaRetryRequest(message.key, mediaKey, meId)
 
 			let error: Error | undefined = undefined
@@ -1274,7 +1253,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 								content.url = getUrlFromDirectPath(content.directPath!)
 
 								logger.debug({ directPath: media.directPath, key: result.key }, 'media update successful')
-							} catch (err) {
+							} catch (err: any) {
 								error = err
 							}
 						}
@@ -1293,9 +1272,6 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			return message
 		},
 		sendMessage: async (jid: string, content: AnyMessageContent, options: MiscMessageGenerationOptions = {}) => {
-			// Auto-migrate JID to LID if available
-			// jid = await autoMigrateJidToLid(jid, 'sending')
-
 			const userJid = authState.creds.me!.id
 			if (
 				typeof content === 'object' &&
@@ -1327,20 +1303,14 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						}),
 					//TODO: CACHE
 					getProfilePicUrl: sock.profilePictureUrl,
+					getCallLink: sock.createCallLink,
 					upload: waUploadToServer,
 					mediaCache: config.mediaCache,
 					options: config.options,
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
-				}) as WAMessage;
-				//
-				// if (isLidUser(jid)) {
-				// 	const lidMapping = signalRepository.getLIDMappingStore()
-				// 	fullMsg.key.senderPn = (await lidMapping.getPNForLID(jid))!;
-				// } else {
-				// 	fullMsg.key.senderPn = jid;
-				// }
-
+				})
+				const isEventMsg = 'event' in content && !!content.event
 				const isDeleteMsg = 'delete' in content && !!content.delete
 				const isEditMsg = 'edit' in content && !!content.edit
 				const isPinMsg = 'pin' in content && !!content.pin
@@ -1364,6 +1334,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 						tag: 'meta',
 						attrs: {
 							polltype: 'creation'
+						}
+					} as BinaryNode)
+				} else if (isEventMsg) {
+					additionalNodes.push({
+						tag: 'meta',
+						attrs: {
+							event_type: 'creation'
 						}
 					} as BinaryNode)
 				}

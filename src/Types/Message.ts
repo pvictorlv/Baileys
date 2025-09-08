@@ -1,14 +1,15 @@
-import { AxiosRequestConfig } from 'axios'
+import type { AxiosRequestConfig } from 'axios'
 import type { Readable } from 'stream'
 import type { URL } from 'url'
 import { proto } from '../../WAProto'
-import { MEDIA_HKDF_KEY_MAPPING } from '../Defaults'
-import { BinaryNode } from '../WABinary'
+import type { MediaType } from '../Defaults'
+import type { BinaryNode } from '../WABinary'
 import type { GroupMetadata } from './GroupMetadata'
-import { CacheStore } from './Socket'
+import type { CacheStore } from './Socket'
 
 // export the WAMessage Prototypes
 export { proto as WAProto }
+export type WAMessage = proto.IWebMessageInfo & { key: WAMessageKey }
 export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage
 export type WAContactsArrayMessage = proto.Message.IContactsArrayMessage
@@ -16,9 +17,8 @@ export type WAMessageKey = proto.IMessageKey & {
 	remoteJidAlt?: string
 	participantAlt?: string
 	server_id?: string
-	isViewOnce?: boolean
+	isViewOnce?: boolean // TODO: remove out of the message key, place in WebMessageInfo
 }
-export type WAMessage = proto.IWebMessageInfo & { key: WAMessageKey }
 export type WATextMessage = proto.Message.IExtendedTextMessage
 export type WAContextInfo = proto.IContextInfo
 export type WALocationMessage = proto.Message.ILocationMessage
@@ -30,16 +30,50 @@ export type WAGenericMediaMessage =
 	| proto.Message.IStickerMessage
 export const WAMessageStubType = proto.WebMessageInfo.StubType
 export const WAMessageStatus = proto.WebMessageInfo.Status
-export enum WAMessageAddressingMode {
-	PN = 'pn',
-	LID = 'lid'
-}
-import { ILogger } from '../Utils/logger'
+import type { ILogger } from '../Utils/logger'
 export type WAMediaPayloadURL = { url: URL | string }
 export type WAMediaPayloadStream = { stream: Readable }
 export type WAMediaUpload = Buffer | WAMediaPayloadStream | WAMediaPayloadURL
 /** Set of message types that are supported by the library */
 export type MessageType = keyof proto.Message
+
+export enum WAMessageAddressingMode {
+	PN = 'pn',
+	LID = 'lid'
+}
+
+export type MessageWithContextInfo =
+	| 'imageMessage'
+	| 'contactMessage'
+	| 'locationMessage'
+	| 'extendedTextMessage'
+	| 'documentMessage'
+	| 'audioMessage'
+	| 'videoMessage'
+	| 'call'
+	| 'contactsArrayMessage'
+	| 'liveLocationMessage'
+	| 'templateMessage'
+	| 'stickerMessage'
+	| 'groupInviteMessage'
+	| 'templateButtonReplyMessage'
+	| 'productMessage'
+	| 'listMessage'
+	| 'orderMessage'
+	| 'listResponseMessage'
+	| 'buttonsMessage'
+	| 'buttonsResponseMessage'
+	| 'interactiveMessage'
+	| 'interactiveResponseMessage'
+	| 'pollCreationMessage'
+	| 'requestPhoneNumberMessage'
+	| 'messageHistoryBundle'
+	| 'eventMessage'
+	| 'newsletterAdminInviteMessage'
+	| 'albumMessage'
+	| 'stickerPackMessage'
+	| 'pollResultSnapshotMessage'
+	| 'messageHistoryNotice'
 
 export type DownloadableMessage = { mediaKey?: Uint8Array | null; directPath?: string | null; url?: string | null }
 
@@ -100,6 +134,19 @@ export type PollMessageOptions = {
 	toAnnouncementGroup?: boolean
 }
 
+export type EventMessageOptions = {
+	name: string
+	description?: string
+	startDate: Date
+	endDate?: Date
+	location?: WALocationMessage
+	call?: 'audio' | 'video'
+	isCancelled?: boolean
+	isScheduleCall?: boolean
+	extraGuestsAllowed?: boolean
+	messageSecret?: Uint8Array<ArrayBufferLike>
+}
+
 type SharePhoneNumber = {
 	sharePhoneNumber: boolean
 }
@@ -108,43 +155,42 @@ type RequestPhoneNumber = {
 	requestPhoneNumber: boolean
 }
 
-export type MediaType = keyof typeof MEDIA_HKDF_KEY_MAPPING
 export type AnyMediaMessageContent = (
 	| ({
-			image: WAMediaUpload
-			caption?: string
-			jpegThumbnail?: string
-	  } & Mentionable &
-			Contextable &
-			WithDimensions)
+	image: WAMediaUpload
+	caption?: string
+	jpegThumbnail?: string
+} & Mentionable &
+	Contextable &
+	WithDimensions)
 	| ({
-			video: WAMediaUpload
-			caption?: string
-			gifPlayback?: boolean
-			jpegThumbnail?: string
-			/** if set to true, will send as a `video note` */
-			ptv?: boolean
-	  } & Mentionable &
-			Contextable &
-			WithDimensions)
+	video: WAMediaUpload
+	caption?: string
+	gifPlayback?: boolean
+	jpegThumbnail?: string
+	/** if set to true, will send as a `video note` */
+	ptv?: boolean
+} & Mentionable &
+	Contextable &
+	WithDimensions)
 	| {
-			audio: WAMediaUpload
-			/** if set to true, will send as a `voice note` */
-			ptt?: boolean
-			/** optionally tell the duration of the audio */
-			seconds?: number
-	  }
+	audio: WAMediaUpload
+	/** if set to true, will send as a `voice note` */
+	ptt?: boolean
+	/** optionally tell the duration of the audio */
+	seconds?: number
+}
 	| ({
-			sticker: WAMediaUpload
-			isAnimated?: boolean
-	  } & WithDimensions)
+	sticker: WAMediaUpload
+	isAnimated?: boolean
+} & WithDimensions)
 	| ({
-			document: WAMediaUpload
-			mimetype: string
-			fileName?: string
-			caption?: string
-	  } & Contextable)
-) & { mimetype?: string } & Editable
+	document: WAMediaUpload
+	mimetype: string
+	fileName?: string
+	caption?: string
+} & Contextable)
+	) & { mimetype?: string } & Editable
 
 export type ButtonReplyInfo = {
 	displayText: string
@@ -166,69 +212,70 @@ export type WASendableProduct = Omit<proto.Message.ProductMessage.IProductSnapsh
 
 export type AnyRegularMessageContent = (
 	| ({
-			text: string
-			linkPreview?: WAUrlInfo | null
-	  } & Mentionable &
-			Contextable &
-			Editable)
+	text: string
+	linkPreview?: WAUrlInfo | null
+} & Mentionable &
+	Contextable &
+	Editable)
 	| AnyMediaMessageContent
+	| { event: EventMessageOptions }
 	| ({
-			poll: PollMessageOptions
-	  } & Mentionable &
-			Contextable &
-			Editable)
+	poll: PollMessageOptions
+} & Mentionable &
+	Contextable &
+	Editable)
 	| {
-			contacts: {
-				displayName?: string
-				contacts: proto.Message.IContactMessage[]
-			}
-	  }
+	contacts: {
+		displayName?: string
+		contacts: proto.Message.IContactMessage[]
+	}
+}
 	| {
-			location: WALocationMessage
-	  }
+	location: WALocationMessage
+}
 	| { react: proto.Message.IReactionMessage }
 	| {
-			buttonReply: ButtonReplyInfo
-			type: 'template' | 'plain'
-	  }
+	buttonReply: ButtonReplyInfo
+	type: 'template' | 'plain'
+}
 	| {
-			groupInvite: GroupInviteInfo
-	  }
+	groupInvite: GroupInviteInfo
+}
 	| {
-			listReply: Omit<proto.Message.IListResponseMessage, 'contextInfo'>
-	  }
+	listReply: Omit<proto.Message.IListResponseMessage, 'contextInfo'>
+}
 	| {
-			pin: WAMessageKey
-			type: proto.PinInChat.Type
-			/**
-			 * 24 hours, 7 days, 30 days
-			 */
-			time?: 86400 | 604800 | 2592000
-	  }
+	pin: WAMessageKey
+	type: proto.PinInChat.Type
+	/**
+	 * 24 hours, 7 days, 30 days
+	 */
+	time?: 86400 | 604800 | 2592000
+}
 	| {
-			product: WASendableProduct
-			businessOwnerJid?: string
-			body?: string
-			footer?: string
-	  }
+	product: WASendableProduct
+	businessOwnerJid?: string
+	body?: string
+	footer?: string
+}
 	| SharePhoneNumber
 	| RequestPhoneNumber
-) &
+	) &
 	ViewOnce
 
 export type AnyMessageContent =
 	| AnyRegularMessageContent
 	| {
-			forward: WAMessage
-			force?: boolean
-	  }
+	forward: WAMessage
+	force?: boolean
+}
 	| {
-			/** Delete your message or anyone's message in a group (admin required) */
-			delete: WAMessageKey
-	  }
+	/** Delete your message or anyone's message in a group (admin required) */
+	delete: WAMessageKey
+}
 	| {
-			disappearingMessagesInChat: boolean | number
-	  }
+	disappearingMessagesInChat: boolean | number
+}
 
 export type GroupMetadataParticipants = Pick<GroupMetadata, 'participants'>
 
@@ -276,7 +323,7 @@ export type MessageGenerationOptionsFromContent = MiscMessageGenerationOptions &
 export type WAMediaUploadFunction = (
 	encFilePath: string,
 	opts: { fileEncSha256B64: string; mediaType: MediaType; timeoutMs?: number }
-) => Promise<{ mediaUrl: string; directPath: string }>
+) => Promise<{ mediaUrl: string; directPath: string; meta_hmac?: string; ts?: number; fbid?: number }>
 
 export type MediaGenerationOptions = {
 	logger?: ILogger
@@ -296,6 +343,7 @@ export type MediaGenerationOptions = {
 export type MessageContentGenerationOptions = MediaGenerationOptions & {
 	getUrlInfo?: (text: string) => Promise<WAUrlInfo | undefined>
 	getProfilePicUrl?: (jid: string, type: 'image' | 'preview') => Promise<string | undefined>
+	getCallLink?: (type: 'audio' | 'video', event?: { startTime: number }) => Promise<string | undefined>
 	jid?: string
 }
 export type MessageGenerationOptions = MessageContentGenerationOptions & MessageGenerationOptionsFromContent
