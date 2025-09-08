@@ -7,10 +7,10 @@ export class LIDMappingStore {
 	private readonly keys: SignalKeyStoreWithTransaction
 	private onWhatsAppFunc?: (...jids: string[]) => Promise<
 		| {
-				jid: string
-				exists: boolean
-				lid: string
-		  }[]
+		jid: string
+		exists: boolean
+		lid: string
+	}[]
 		| undefined
 	>
 
@@ -18,10 +18,10 @@ export class LIDMappingStore {
 		keys: SignalKeyStoreWithTransaction,
 		onWhatsAppFunc?: (...jids: string[]) => Promise<
 			| {
-					jid: string
-					exists: boolean
-					lid: string
-			  }[]
+			jid: string
+			exists: boolean
+			lid: string
+		}[]
 			| undefined
 		>
 	) {
@@ -92,7 +92,7 @@ export class LIDMappingStore {
 			logger.trace(`No LID mapping found for PN user ${pnUser}; getting from USync`)
 			const { exists, lid } = (await this.onWhatsAppFunc?.(pn))?.[0]!
 			if (exists) {
-				lidUser = jidDecode(lid)?.user!
+				lidUser = jidDecode(lid)?.user
 			} else {
 				return null
 			}
@@ -128,8 +128,8 @@ export class LIDMappingStore {
 		}
 
 		// Construct device-specific PN JID
-		// const lidDevice = decoded.device !== undefined ? decoded.device : 0
-		const pnJid = `${pnUser}@s.whatsapp.net`
+		const lidDevice = decoded.device !== undefined ? decoded.device : 0
+		const pnJid = `${pnUser}:${lidDevice}@s.whatsapp.net`
 
 		logger.trace(`Found reverse mapping: ${lid} → ${pnJid}`)
 		return pnJid
