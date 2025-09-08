@@ -291,6 +291,18 @@ const processMessage = async (
 					}
 				])
 				break
+			case proto.Message.ProtocolMessage.Type.LID_MIGRATION_MAPPING_SYNC:
+				const lidMappingStore = signalRepository.getLIDMappingStore()
+				const encodedPayload = protocolMsg.lidMigrationMappingSyncMessage?.encodedMappingPayload!
+				const { pnToLidMappings, chatDbMigrationTimestamp } = proto.LIDMigrationMappingSyncPayload.decode(encodedPayload)
+				logger?.debug({ pnToLidMappings, chatDbMigrationTimestamp }, "got lid mappings and chat db migration timestamp")
+				const pairs = []
+				for (const { pn, latestLid, assignedLid } of pnToLidMappings) {
+					const lid = latestLid || assignedLid
+					pairs.push({lid: `${lid}@lid`, pn: `${pn}@s.whatsapp.net`})
+				}
+				await lidMappingStore.storeLIDPNMappings(pairs)
+				break
 		}
 	} else if (content?.reactionMessage) {
 		const reaction: proto.IReaction = {
