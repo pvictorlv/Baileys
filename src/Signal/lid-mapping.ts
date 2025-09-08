@@ -92,7 +92,7 @@ export class LIDMappingStore {
 			logger.trace(`No LID mapping found for PN user ${pnUser}; getting from USync`)
 			const { exists, lid } = (await this.onWhatsAppFunc?.(pn))?.[0]!
 			if (exists) {
-				lidUser = jidDecode(lid)?.user
+				lidUser = jidDecode(lid)?.user!
 			} else {
 				return null
 			}
