@@ -778,13 +778,15 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		const meId = authState.creds.me!.id
 		const meLid = authState.creds.me?.lid
 
-		if (isPnUser(jid)){
-			const lidMapping = signalRepository.getLIDMappingStore()
-			const lidForPN = await lidMapping.getLIDForPN(jid)
-			if (lidForPN) {
-				jid = jidNormalizedUser(lidForPN)
-			}
-		}
+		//todo: test
+		//
+		// if (isPnUser(jid)){
+		// 	const lidMapping = signalRepository.getLIDMappingStore()
+		// 	const lidForPN = await lidMapping.getLIDForPN(jid)
+		// 	if (lidForPN) {
+		// 		jid = jidNormalizedUser(lidForPN)
+		// 	}
+		// }
 
 		// ADDRESSING CONSISTENCY: Keep envelope addressing as user provided, handle LID migration in encryption
 
