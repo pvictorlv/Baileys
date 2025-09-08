@@ -4,7 +4,7 @@ export interface Contact {
 	/** ID in Lid (anonymous) format (@lid) **/
 	lid?: string
 	/** ID in Phone Number format (@s.whatsapp.net)  **/
-	jid?: string
+	phoneNumber?: string
 	/** name of the contact, you have saved on your WA */
 	name?: string
 	/** name of the contact, the contact has set on their own on WA */

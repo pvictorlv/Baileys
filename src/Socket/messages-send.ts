@@ -40,7 +40,7 @@ import {
 	getBinaryNodeChild,
 	getBinaryNodeChildren,
 	isJidGroup,
-	isJidUser, isLidUser,
+	isPnUser, isLidUser,
 	jidDecode,
 	jidEncode,
 	jidNormalizedUser,
@@ -95,7 +95,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 	 */
 	const autoMigrateJidToLid = async (jid: string, context = 'message'): Promise<string> => {
 		const originalJid = jid
-		if (!isJidUser(jid) || !jid.includes('@s.whatsapp.net')) {
+		if (!isPnUser(jid) || !jid.includes('@s.whatsapp.net')) {
 			return jid
 		}
 
@@ -175,7 +175,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 			node.attrs.t = unixTimestampSeconds().toString()
 		}
 
-		if (type === 'sender' && isJidUser(jid)) {
+		if (type === 'sender' && isPnUser(jid)) {
 			node.attrs.recipient = jid
 			node.attrs.to = participant!
 		} else {

@@ -44,10 +44,10 @@ export const jidDecode = (jid: string | undefined): FullJid | undefined => {
 /** is the jid a user */
 export const areJidsSameUser = (jid1: string | undefined, jid2: string | undefined) =>
 	jidDecode(jid1)?.user === jidDecode(jid2)?.user
-/** is the jid Meta IA */
-export const isJidMetaIa = (jid: string | undefined) => jid?.endsWith('@bot')
-/** is the jid a user */
-export const isJidUser = (jid: string | undefined) => jid?.endsWith('@s.whatsapp.net')
+/** is the jid Meta AI */
+export const isJidMetaAI = (jid: string | undefined) => jid?.endsWith('@bot')
+/** is the jid a phone number user */
+export const isPnUser = (jid: string | undefined) => jid?.endsWith('@s.whatsapp.net')
 /** is the jid a group */
 export const isLidUser = (jid: string | undefined) => jid?.endsWith('@lid')
 /** is the jid a broadcast */
@@ -71,4 +71,16 @@ export const jidNormalizedUser = (jid: string | undefined) => {
 
 	const { user, server } = result
 	return jidEncode(user, server === 'c.us' ? 's.whatsapp.net' : (server as JidServer))
+}
+
+/** Transfer device information from one JID to another */
+export const transferDevice = (fromJid: string, toJid: string): string => {
+	const fromDecoded = jidDecode(fromJid)
+	const toDecoded = jidDecode(toJid)
+	
+	if (!fromDecoded || !toDecoded) {
+		return toJid
+	}
+	
+	return jidEncode(toDecoded.user, toDecoded.server, fromDecoded.device)
 }

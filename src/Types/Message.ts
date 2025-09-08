@@ -13,12 +13,10 @@ export type WAMessageContent = proto.IMessage
 export type WAContactMessage = proto.Message.IContactMessage
 export type WAContactsArrayMessage = proto.Message.IContactsArrayMessage
 export type WAMessageKey = proto.IMessageKey & {
-	peerRecipientLid?: string
-	senderLid?: string
+	remoteJidAlt?: string
+	participantAlt?: string
 	server_id?: string
-	senderPn?: string
-	participantLid?: string
-	participantPn?: string
+	isViewOnce?: boolean
 }
 export type WAMessage = proto.IWebMessageInfo & { key: WAMessageKey }
 export type WATextMessage = proto.Message.IExtendedTextMessage
@@ -32,6 +30,10 @@ export type WAGenericMediaMessage =
 	| proto.Message.IStickerMessage
 export const WAMessageStubType = proto.WebMessageInfo.StubType
 export const WAMessageStatus = proto.WebMessageInfo.Status
+export enum WAMessageAddressingMode {
+	PN = 'pn',
+	LID = 'lid'
+}
 import { ILogger } from '../Utils/logger'
 export type WAMediaPayloadURL = { url: URL | string }
 export type WAMediaPayloadStream = { stream: Readable }

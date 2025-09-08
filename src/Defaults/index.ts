@@ -3,7 +3,8 @@ import { makeLibSignalRepository } from '../Signal/libsignal'
 import type { AuthenticationState, MediaType, SocketConfig, WAVersion } from '../Types'
 import { Browsers } from '../Utils'
 import logger from '../Utils/logger'
-import { version } from './baileys-version.json'
+
+const version = [2, 3000, 1023223821]
 
 export const UNAUTHORIZED_CODES = [401, 403, 419]
 

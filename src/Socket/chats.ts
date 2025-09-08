@@ -50,7 +50,7 @@ import {
 	S_WHATSAPP_NET
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
-import { makeUSyncSocket } from './usync'
+import { makeSocket } from './socket.js'
 const MAX_SYNC_ATTEMPTS = 2
 
 export const makeChatsSocket = (config: SocketConfig) => {
@@ -62,8 +62,8 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		shouldIgnoreJid,
 		shouldSyncHistoryMessage
 	} = config
-	const sock = makeUSyncSocket(config)
-	const { ev, ws, authState, generateMessageTag, sendNode, query, onUnexpectedError } = sock
+	const sock = makeSocket(config)
+	const { ev, ws, authState, generateMessageTag, sendNode, query, signalRepository, onUnexpectedError } = sock
 
 	let privacySettings: { [_: string]: string } | undefined
 	let needToFlushWithAppStateSync = false
@@ -215,20 +215,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		return botList
 	}
 
-	const onWhatsApp = async (...jids: string[]) => {
-		const usyncQuery = new USyncQuery().withContactProtocol().withLIDProtocol()
 
-		for (const jid of jids) {
-			const phone = `+${jid.replace('+', '').split('@')[0].split(':')[0]}`
-			usyncQuery.withUser(new USyncUser().withPhone(phone))
-		}
-
-		const results = await sock.executeUSyncQuery(usyncQuery)
-
-		if (results) {
-			return results.list.filter(a => !!a.contact).map(({ contact, id, lid }) => ({ jid: id, exists: contact, lid }))
-		}
-	}
 
 	const fetchStatus = async (...jids: string[]) => {
 		const usyncQuery = new USyncQuery().withStatusProtocol()
@@ -973,6 +960,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				}
 			})(),
 			processMessage(msg, {
+				signalRepository,
 				shouldProcessHistoryMsg,
 				placeholderResendCache,
 				ev,
@@ -1065,7 +1053,6 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		sendPresenceUpdate,
 		presenceSubscribe,
 		profilePictureUrl,
-		onWhatsApp,
 		fetchBlocklist,
 		fetchStatus,
 		fetchDisappearingDuration,

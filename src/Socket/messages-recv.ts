@@ -50,7 +50,8 @@ import {
 	getBinaryNodeChildString,
 	isJidGroup,
 	isJidStatusBroadcast,
-	isJidUser,
+	isLidUser,
+	isPnUser,
 	jidDecode,
 	jidNormalizedUser,
 	S_WHATSAPP_NET
@@ -307,6 +308,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 
 	const handleGroupNotification = (participant: string, child: BinaryNode, msg: Partial<proto.IWebMessageInfo>) => {
 		const participantJid = getBinaryNodeChild(child, 'participant')?.attrs?.jid || participant
+		// TODO: Handle LID context in group notifications
 		switch (child?.tag) {
 			case 'create':
 				const metadata = extractGroupMetadata(child)
@@ -989,7 +991,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							// message was sent by us from a different device
 							type = 'sender'
 							// need to specially handle this case
-							if (isJidUser(msg.key.remoteJid!)) {
+							if (isPnUser(msg.key.remoteJid!)) {
 								participant = author
 							}
 						} else if (!sendActiveReceipts) {
