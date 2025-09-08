@@ -808,7 +808,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		}: MessageRelayOptions
 	) => {
 		// Auto-migrate JID to LID if available
-		jid = await autoMigrateJidToLid(jid, 'relaying')
+		// jid = await autoMigrateJidToLid(jid, 'relaying')
 
 		const meId = authState.creds.me!.id
 		const meLid = authState.creds.me?.lid
@@ -1297,7 +1297,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		},
 		sendMessage: async (jid: string, content: AnyMessageContent, options: MiscMessageGenerationOptions = {}) => {
 			// Auto-migrate JID to LID if available
-			jid = await autoMigrateJidToLid(jid, 'sending')
+			// jid = await autoMigrateJidToLid(jid, 'sending')
 
 			const userJid = authState.creds.me!.id
 			if (
@@ -1336,13 +1336,13 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 					messageId: generateMessageIDV2(sock.user?.id),
 					...options
 				}) as WAMessage;
-
-				if (isLidUser(jid)) {
-					const lidMapping = signalRepository.getLIDMappingStore()
-					fullMsg.key.senderPn = (await lidMapping.getPNForLID(jid))!;
-				} else {
-					fullMsg.key.senderPn = jid;
-				}
+				//
+				// if (isLidUser(jid)) {
+				// 	const lidMapping = signalRepository.getLIDMappingStore()
+				// 	fullMsg.key.senderPn = (await lidMapping.getPNForLID(jid))!;
+				// } else {
+				// 	fullMsg.key.senderPn = jid;
+				// }
 
 				const isDeleteMsg = 'delete' in content && !!content.delete
 				const isEditMsg = 'edit' in content && !!content.edit
