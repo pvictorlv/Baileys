@@ -45,7 +45,7 @@ import {
 	jidEncode,
 	jidNormalizedUser,
 	JidWithDevice,
-	S_WHATSAPP_NET
+	S_WHATSAPP_NET, transferDevice
 } from '../WABinary'
 import { USyncQuery, USyncUser } from '../WAUSync'
 import { makeGroupsSocket } from './groups'
@@ -391,6 +391,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 		return !!lidSessions[lidSignalId]
 	}
 
+
 	const assertSessions = async (jids: string[], force: boolean) => {
 		let didFetchNewSession = false
 		const jidsRequiringFetch: string[] = []
@@ -473,11 +474,7 @@ export const makeMessagesSocket = (config: SocketConfig) => {
 				if (!jid.includes('@s.whatsapp.net')) return
 
 				try {
-					const jidDecoded = jidDecode(jid)
-					const deviceId = jidDecoded?.device || 0
-					const lidDecoded = jidDecode(lidForPN)
-					const lidWithDevice = jidEncode(lidDecoded?.user!, 'lid', deviceId)
-
+					const lidWithDevice = transferDevice(jid, lidForPN)
 					await signalRepository.migrateSession(jid, lidWithDevice)
 					logger.debug({ fromJid: jid, toJid: lidWithDevice }, 'Migrated device session to LID')
 
