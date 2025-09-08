@@ -31,7 +31,7 @@ export const jidDecode = (jid: string | undefined): FullJid | undefined => {
 	const userCombined = jid!.slice(0, sepIdx)
 
 	const [userAgent, device] = userCombined.split(':')
-	const user = userAgent.split('_')[0]
+	const user = userAgent!.split('_')[0]!
 
 	return {
 		server: server as JidServer,
@@ -46,9 +46,9 @@ export const areJidsSameUser = (jid1: string | undefined, jid2: string | undefin
 	jidDecode(jid1)?.user === jidDecode(jid2)?.user
 /** is the jid Meta AI */
 export const isJidMetaAI = (jid: string | undefined) => jid?.endsWith('@bot')
-/** is the jid a phone number user */
+/** is the jid a PN user */
 export const isPnUser = (jid: string | undefined) => jid?.endsWith('@s.whatsapp.net')
-/** is the jid a group */
+/** is the jid a LID */
 export const isLidUser = (jid: string | undefined) => jid?.endsWith('@lid')
 /** is the jid a broadcast */
 export const isJidBroadcast = (jid: string | undefined) => jid?.endsWith('@broadcast')
@@ -61,7 +61,7 @@ export const isJidNewsletter = (jid: string | undefined) => jid?.endsWith('@news
 
 const botRegexp = /^1313555\d{4}$|^131655500\d{2}$/
 
-export const isJidBot = (jid: string | undefined) => jid && botRegexp.test(jid.split('@')[0]) && jid.endsWith('@c.us')
+export const isJidBot = (jid: string | undefined) => jid && botRegexp.test(jid.split('@')[0]!) && jid.endsWith('@c.us')
 
 export const jidNormalizedUser = (jid: string | undefined) => {
 	const result = jidDecode(jid)
@@ -73,14 +73,9 @@ export const jidNormalizedUser = (jid: string | undefined) => {
 	return jidEncode(user, server === 'c.us' ? 's.whatsapp.net' : (server as JidServer))
 }
 
-/** Transfer device information from one JID to another */
-export const transferDevice = (fromJid: string, toJid: string): string => {
+export const transferDevice = (fromJid: string, toJid: string) => {
 	const fromDecoded = jidDecode(fromJid)
-	const toDecoded = jidDecode(toJid)
-	
-	if (!fromDecoded || !toDecoded) {
-		return toJid
-	}
-	
-	return jidEncode(toDecoded.user, toDecoded.server, fromDecoded.device)
+	const deviceId = fromDecoded?.device || 0
+	const { server, user } = jidDecode(toJid)!
+	return jidEncode(user, server, deviceId)
 }

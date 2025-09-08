@@ -3,7 +3,7 @@ import axios from 'axios'
 import { randomBytes } from 'crypto'
 import { promises as fs } from 'fs'
 import { type Transform } from 'stream'
-import { proto } from '../../WAProto/index.js'
+import { proto } from '../../WAProto'
 import {
 	CALL_AUDIO_PREFIX,
 	CALL_VIDEO_PREFIX,

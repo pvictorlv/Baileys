@@ -1,5 +1,5 @@
 import EventEmitter from 'events'
-import { proto } from '../../WAProto/index.js'
+import { proto } from '../../WAProto'
 import type {
 	BaileysEvent,
 	BaileysEventEmitter,
@@ -66,40 +66,17 @@ type BaileysBufferableEventEmitter = BaileysEventEmitter & {
 /**
  * The event buffer logically consolidates different events into a single event
  * making the data processing more efficient.
- * @param logger the logger instance for debugging
  */
 export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter => {
 	const ev = new EventEmitter()
 	const historyCache = new Set<string>()
 
 	let data = makeBufferData()
-	let buffersInProgress = 0
-	let lastFlushAttempt = Date.now()
-	let flushTimeout: NodeJS.Timeout | null = null
 	let isBuffering = false
-
-	// Safety mechanism: force flush if buffer is stuck for too long
-	const MAX_BUFFER_TIME = 45000 // 45 seconds
-
-	const scheduleForceFlush = () => {
-		if (flushTimeout) {
-			clearTimeout(flushTimeout)
-		}
-
-		flushTimeout = setTimeout(() => {
-			const timeSinceLastFlush = Date.now() - lastFlushAttempt
-			if (buffersInProgress > 0 && timeSinceLastFlush > MAX_BUFFER_TIME) {
-				logger.warn(
-					{
-						buffersInProgress,
-						timeSinceLastFlush
-					},
-					'Force flushing stuck event buffer'
-				)
-				flush(true)
-			}
-		}, MAX_BUFFER_TIME)
-	}
+	let bufferTimeout: NodeJS.Timeout | null = null
+	let bufferCount = 0
+	const MAX_HISTORY_CACHE_SIZE = 10000 // Limit the history cache size to prevent memory bloat
+	const BUFFER_TIMEOUT_MS = 30000 // 30 seconds
 
 	// take the generic event and fire it as a baileys event
 	ev.on('event', (map: BaileysEventData) => {
@@ -112,61 +89,50 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		if (!isBuffering) {
 			logger.debug('Event buffer activated')
 			isBuffering = true
-		}
+			bufferCount++
 
-		buffersInProgress += 1
-		logger.trace({ buffersInProgress }, 'buffer started')
-		scheduleForceFlush()
+			// Auto-flush after a timeout to prevent infinite buffering
+			if (bufferTimeout) {
+				clearTimeout(bufferTimeout)
+			}
+
+			bufferTimeout = setTimeout(() => {
+				if (isBuffering) {
+					logger.warn('Buffer timeout reached, auto-flushing')
+					flush()
+				}
+			}, BUFFER_TIMEOUT_MS)
+		} else {
+			bufferCount++
+		}
 	}
 
-	function flush(force = false) {
+	function flush() {
 		if (!isBuffering) {
 			return false
 		}
 
-		if (!force) {
-			// reduce the number of buffers in progress
-			buffersInProgress -= 1
-			logger.trace({ buffersInProgress }, 'buffer decremented')
-			// if there are still some buffers going on
-			// then we don't flush now
-			if (buffersInProgress) {
-				return false
-			}
-		} else {
-			// Force flush - reset counter
-			logger.debug({ buffersInProgress }, 'force flushing, resetting buffer counter')
-			buffersInProgress = 0
-		}
-
-		logger.debug('Flushing event buffer')
+		logger.debug({ bufferCount }, 'Flushing event buffer')
 		isBuffering = false
+		bufferCount = 0
 
-		// Clear the force flush timeout
-		if (flushTimeout) {
-			clearTimeout(flushTimeout)
-			flushTimeout = null
+		// Clear timeout
+		if (bufferTimeout) {
+			clearTimeout(bufferTimeout)
+			bufferTimeout = null
 		}
 
-		lastFlushAttempt = Date.now()
+		// Clear history cache if it exceeds the max size
+		if (historyCache.size > MAX_HISTORY_CACHE_SIZE) {
+			logger.debug({ cacheSize: historyCache.size }, 'Clearing history cache')
+			historyCache.clear()
+		}
 
 		const newData = makeBufferData()
 		const chatUpdates = Object.values(data.chatUpdates)
 		let conditionalChatUpdatesLeft = 0
-		let staleChatUpdatesRemoved = 0
-		const now = Date.now()
-
 		for (const update of chatUpdates) {
 			if (update.conditional) {
-				// Remove stale conditional updates (older than 5 minutes)
-				const updateAge = now - (update.timestamp || 0)
-				if (updateAge > 300000) {
-					// 5 minutes
-					staleChatUpdatesRemoved += 1
-					logger.debug({ chatId: update.id, updateAge }, 'removing stale conditional chat update')
-					continue
-				}
-
 				conditionalChatUpdatesLeft += 1
 				newData.chatUpdates[update.id!] = update
 				delete data.chatUpdates[update.id!]
@@ -180,14 +146,7 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 
 		data = newData
 
-		logger.trace(
-			{
-				conditionalChatUpdatesLeft,
-				staleChatUpdatesRemoved,
-				buffersInProgress
-			},
-			'released buffered events'
-		)
+		logger.trace({ conditionalChatUpdatesLeft }, 'released buffered events')
 
 		return true
 	}
@@ -219,23 +178,26 @@ export const makeEventBuffer = (logger: ILogger): BaileysBufferableEventEmitter 
 		createBufferedFunction(work) {
 			return async (...args) => {
 				buffer()
-				let bufferReleased = false
-
 				try {
 					const result = await work(...args)
-					flush()
-					bufferReleased = true
-					return result
-				} catch (error: any) {
-					// Ensure buffer is always released, even on error
-					if (!bufferReleased) {
-						logger.warn({ error: error.message }, 'releasing buffer due to error in buffered function')
-						flush()
+					// If this is the only buffer, flush after a small delay
+					if (bufferCount === 1) {
+						setTimeout(() => {
+							if (isBuffering && bufferCount === 1) {
+								flush()
+							}
+						}, 100) // Small delay to allow nested buffers
 					}
 
+					return result
+				} catch (error) {
 					throw error
 				} finally {
-					// Flushing is now controlled centrally by the state machine.
+					bufferCount = Math.max(0, bufferCount - 1)
+					if (bufferCount === 0) {
+						// Auto-flush when no other buffers are active
+						setTimeout(flush, 100)
+					}
 				}
 			}
 		},
@@ -364,8 +326,7 @@ function append<E extends BufferableEvent>(
 						data.chatUpdates[chatId] = concatChats(chatUpdate, update)
 					}
 				} else if (conditionMatches === undefined) {
-					// condition yet to be fulfilled - add timestamp for tracking
-					update.timestamp = update.timestamp || Date.now()
+					// condition yet to be fulfilled
 					data.chatUpdates[chatId] = update
 				}
 				// otherwise -- condition not met, update is invalid
@@ -417,7 +378,7 @@ function append<E extends BufferableEvent>(
 				}
 
 				if (data.contactUpdates[contact.id]) {
-					upsert = Object.assign(data.contactUpdates[contact.id], trimUndefined(contact)) as Contact
+					upsert = Object.assign(data.contactUpdates[contact.id]!, trimUndefined(contact)) as Contact
 					delete data.contactUpdates[contact.id]
 				}
 			}
@@ -628,7 +589,7 @@ function consolidateEvents(data: BufferedEventData) {
 
 	const messageUpsertList = Object.values(data.messageUpserts)
 	if (messageUpsertList.length) {
-		const type = messageUpsertList[0].type
+		const type = messageUpsertList[0]!.type
 		map['messages.upsert'] = {
 			messages: messageUpsertList.map(m => m.message),
 			type

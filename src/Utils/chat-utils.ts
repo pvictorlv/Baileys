@@ -1,7 +1,7 @@
 import { Boom } from '@hapi/boom'
-import { AxiosRequestConfig } from 'axios'
+import type { AxiosRequestConfig } from 'axios'
 import { proto } from '../../WAProto'
-import {
+import type {
 	BaileysEventEmitter,
 	Chat,
 	ChatModification,
@@ -14,17 +14,15 @@ import {
 	WAPatchCreate,
 	WAPatchName
 } from '../Types'
-import { ChatLabelAssociation, LabelAssociationType, MessageLabelAssociation } from '../Types/LabelAssociation'
 import {
-	BinaryNode,
-	getBinaryNodeChild,
-	getBinaryNodeChildren,
-	isJidGroup,
-	jidNormalizedUser
-} from '../WABinary'
+	type ChatLabelAssociation,
+	LabelAssociationType,
+	type MessageLabelAssociation
+} from '../Types/LabelAssociation'
+import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildren, isJidGroup, jidNormalizedUser } from '../WABinary'
 import { aesDecrypt, aesEncrypt, hkdf, hmacSign } from './crypto'
 import { toNumber } from './generics'
-import { ILogger } from './logger'
+import type { ILogger } from './logger'
 import { LT_HASH_ANTI_TAMPERING } from './lt-hash'
 import { downloadContentFromMessage } from './messages-media'
 
@@ -156,7 +154,7 @@ export const encodeSyncdPatch = async (
 	state = { ...state, indexValueMap: { ...state.indexValueMap } }
 
 	const indexBuffer = Buffer.from(JSON.stringify(index))
-	const dataProto = proto.SyncActionData.fromObject({
+	const dataProto = proto.SyncActionData.create({
 		index: indexBuffer,
 		value: syncAction,
 		padding: new Uint8Array(0),
@@ -342,7 +340,7 @@ export const extractSyncdPatches = async (result: BinaryNode, options: AxiosRequ
 
 					const syncd = proto.SyncdPatch.decode(content as Uint8Array)
 					if (!syncd.version) {
-						syncd.version = { version: +collectionNode.attrs.version + 1 }
+						syncd.version = { version: +collectionNode.attrs.version! + 1 }
 					}
 
 					syncds.push(syncd)
@@ -391,9 +389,9 @@ export const decodeSyncdSnapshot = async (
 		getAppStateSyncKey,
 		areMutationsRequired
 			? mutation => {
-					const index = mutation.syncAction.index?.toString()
-					mutationMap[index!] = mutation
-				}
+				const index = mutation.syncAction.index?.toString()
+				mutationMap[index!] = mutation
+			}
 			: () => {},
 		validateMacs
 	)
@@ -458,9 +456,9 @@ export const decodePatches = async (
 			getAppStateSyncKey,
 			shouldMutate
 				? mutation => {
-						const index = mutation.syncAction.index?.toString()
-						mutationMap[index!] = mutation
-					}
+					const index = mutation.syncAction.index?.toString()
+					mutationMap[index!] = mutation
+				}
 				: () => {},
 			true
 		)
@@ -499,24 +497,24 @@ export const chatModificationToAppPatch = (mod: ChatModification, jid: string) =
 				lastMessageTimestamp: lastMsg?.messageTimestamp,
 				messages: lastMessages?.length
 					? lastMessages.map(m => {
-							if (!m.key?.id || !m.key?.remoteJid) {
-								throw new Boom('Incomplete key', { statusCode: 400, data: m })
-							}
+						if (!m.key?.id || !m.key?.remoteJid) {
+							throw new Boom('Incomplete key', { statusCode: 400, data: m })
+						}
 
-							if (isJidGroup(m.key.remoteJid) && !m.key.fromMe && !m.key.participant) {
-								throw new Boom('Expected not from me message to have participant', { statusCode: 400, data: m })
-							}
+						if (isJidGroup(m.key.remoteJid) && !m.key.fromMe && !m.key.participant) {
+							throw new Boom('Expected not from me message to have participant', { statusCode: 400, data: m })
+						}
 
-							if (!m.messageTimestamp || !toNumber(m.messageTimestamp)) {
-								throw new Boom('Missing timestamp in last message list', { statusCode: 400, data: m })
-							}
+						if (!m.messageTimestamp || !toNumber(m.messageTimestamp)) {
+							throw new Boom('Missing timestamp in last message list', { statusCode: 400, data: m })
+						}
 
-							if (m.key.participant) {
-								m.key.participant = jidNormalizedUser(m.key.participant)
-							}
+						if (m.key.participant) {
+							m.key.participant = jidNormalizedUser(m.key.participant)
+						}
 
-							return m
-						})
+						return m
+					})
 					: undefined
 			}
 		} else {
@@ -583,7 +581,9 @@ export const chatModificationToAppPatch = (mod: ChatModification, jid: string) =
 	} else if ('clear' in mod) {
 		patch = {
 			syncAction: {
-				clearChatAction: {} // add message range later
+				clearChatAction: {
+					messageRange: getMessageRange(mod.lastMessages)
+				}
 			},
 			index: ['clearChat', jid, '1' /*the option here is 0 when keep starred messages is enabled*/, '0'],
 			type: 'regular_high',
@@ -602,8 +602,28 @@ export const chatModificationToAppPatch = (mod: ChatModification, jid: string) =
 			apiVersion: 5,
 			operation: OP.SET
 		}
+	} else if ('contact' in mod) {
+		patch = {
+			syncAction: {
+				contactAction: mod.contact || {}
+			},
+			index: ['contact', jid],
+			type: 'critical_unblock_low',
+			apiVersion: 2,
+			operation: mod.contact ? OP.SET : OP.REMOVE
+		}
+	} else if ('disableLinkPreviews' in mod) {
+		patch = {
+			syncAction: {
+				privacySettingDisableLinkPreviewsAction: mod.disableLinkPreviews || {}
+			},
+			index: ['setting_disableLinkPreviews'],
+			type: 'regular',
+			apiVersion: 8,
+			operation: OP.SET
+		}
 	} else if ('star' in mod) {
-		const key = mod.star.messages[0]
+		const key = mod.star.messages[0]!
 		patch = {
 			syncAction: {
 				starAction: {
@@ -637,6 +657,22 @@ export const chatModificationToAppPatch = (mod: ChatModification, jid: string) =
 			index: ['setting_pushName'],
 			type: 'critical_block',
 			apiVersion: 1,
+			operation: OP.SET
+		}
+	} else if ('quickReply' in mod) {
+		patch = {
+			syncAction: {
+				quickReplyAction: {
+					count: 0,
+					deleted: mod.quickReply.deleted || false,
+					keywords: [],
+					message: mod.quickReply.message || '',
+					shortcut: mod.quickReply.shortcut || ''
+				}
+			},
+			index: ['quick_reply', mod.quickReply.timestamp || String(Math.floor(Date.now() / 1000))],
+			type: 'regular',
+			apiVersion: 2,
 			operation: OP.SET
 		}
 	} else if ('addLabel' in mod) {
@@ -740,7 +776,7 @@ export const processSyncAction = (
 			{
 				id,
 				muteEndTime: action.muteAction?.muted ? toNumber(action.muteAction.muteEndTimestamp) : null,
-				conditional: getChatUpdateConditional(id, undefined)
+				conditional: getChatUpdateConditional(id!, undefined)
 			}
 		])
 	} else if (action?.archiveChatAction || type === 'archive' || type === 'unarchive') {
@@ -769,7 +805,7 @@ export const processSyncAction = (
 			{
 				id,
 				archived: isArchived,
-				conditional: getChatUpdateConditional(id, msgRange)
+				conditional: getChatUpdateConditional(id!, msgRange)
 			}
 		])
 	} else if (action?.markChatAsReadAction) {
@@ -783,7 +819,7 @@ export const processSyncAction = (
 			{
 				id,
 				unreadCount: isNullUpdate ? null : !!markReadAction?.read ? 0 : -1,
-				conditional: getChatUpdateConditional(id, markReadAction?.messageRange)
+				conditional: getChatUpdateConditional(id!, markReadAction?.messageRange)
 			}
 		])
 	} else if (action?.deleteMessageForMeAction || type === 'deleteMessageForMe') {
@@ -815,7 +851,7 @@ export const processSyncAction = (
 			{
 				id,
 				pinned: action.pinAction?.pinned ? toNumber(action.timestamp) : null,
-				conditional: getChatUpdateConditional(id, undefined)
+				conditional: getChatUpdateConditional(id!, undefined)
 			}
 		])
 	} else if (action?.unarchiveChatsSetting) {
@@ -840,13 +876,13 @@ export const processSyncAction = (
 		])
 	} else if (action?.deleteChatAction || type === 'deleteChat') {
 		if (!isInitialSync) {
-			ev.emit('chats.delete', [id])
+			ev.emit('chats.delete', [id!])
 		}
 	} else if (action?.labelEditAction) {
 		const { name, color, deleted, predefinedId } = action.labelEditAction
 
 		ev.emit('labels.edit', {
-			id,
+			id: id!,
 			name: name!,
 			color: color!,
 			deleted: deleted!,
@@ -858,16 +894,16 @@ export const processSyncAction = (
 			association:
 				type === LabelAssociationType.Chat
 					? ({
-							type: LabelAssociationType.Chat,
-							chatId: syncAction.index[2],
-							labelId: syncAction.index[1]
-						} as ChatLabelAssociation)
+						type: LabelAssociationType.Chat,
+						chatId: syncAction.index[2],
+						labelId: syncAction.index[1]
+					} as ChatLabelAssociation)
 					: ({
-							type: LabelAssociationType.Message,
-							chatId: syncAction.index[2],
-							messageId: syncAction.index[3],
-							labelId: syncAction.index[1]
-						} as MessageLabelAssociation)
+						type: LabelAssociationType.Message,
+						chatId: syncAction.index[2],
+						messageId: syncAction.index[3],
+						labelId: syncAction.index[1]
+					} as MessageLabelAssociation)
 		})
 	} else {
 		logger?.debug({ syncAction, id }, 'unprocessable update')
@@ -879,11 +915,11 @@ export const processSyncAction = (
 	): ChatUpdate['conditional'] {
 		return isInitialSync
 			? data => {
-					const chat = data.historySets.chats[id] || data.chatUpserts[id]
-					if (chat) {
-						return msgRange ? isValidPatchBasedOnMessageRange(chat, msgRange) : true
-					}
+				const chat = data.historySets.chats[id] || data.chatUpserts[id]
+				if (chat) {
+					return msgRange ? isValidPatchBasedOnMessageRange(chat, msgRange) : true
 				}
+			}
 			: undefined
 	}
 
