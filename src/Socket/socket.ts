@@ -93,46 +93,28 @@ export const makeSocket = (config: SocketConfig) => {
 	 * @param timeoutMs timeout after which the promise will reject
 	 */
 	const waitForMessage = async <T>(msgId: string, timeoutMs = defaultQueryTimeoutMs) => {
-		let onRecv: ((data: T) => void) | undefined
-		let onErr: ((err: Error) => void) | undefined
+		let onRecv: (json) => void
+		let onErr: (err) => void
 		try {
 			const result = await promiseTimeout<T>(timeoutMs, (resolve, reject) => {
-				onRecv = data => {
-					resolve(data)
-				}
-
+				onRecv = resolve
 				onErr = err => {
-					reject(
-						err ||
-						new Boom('Connection Closed', {
-							statusCode: DisconnectReason.connectionClosed
-						})
-					)
+					reject(err || new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed }))
 				}
 
 				ws.on(`TAG:${msgId}`, onRecv)
-				ws.on('close', onErr)
-				ws.on('error', onErr)
-
-				return () => reject(new Boom('Query Cancelled'))
-			})
-			return result
-		} catch (error) {
-			// Catch timeout and return undefined instead of throwing
-			if (error instanceof Boom && error.output?.statusCode === DisconnectReason.timedOut) {
-				logger?.warn?.({ msgId }, 'timed out waiting for message')
-				return undefined
-			}
-
-			throw error
-		} finally {
-			if (onRecv) ws.off(`TAG:${msgId}`, onRecv)
-			if (onErr) {
-				ws.off('close', onErr)
+				ws.on('close', onErr) // if the socket closes, you'll never receive the message
 				ws.off('error', onErr)
-			}
+			})
+
+			return result as any
+		} finally {
+			ws.off(`TAG:${msgId}`, onRecv!)
+			ws.off('close', onErr!) // if the socket closes, you'll never receive the message
+			ws.off('error', onErr!)
 		}
 	}
+
 
 	/** send a query, and wait for its response. auto-generates message ID if not provided */
 	const query = async (node: BinaryNode, timeoutMs?: number) => {
@@ -142,14 +124,10 @@ export const makeSocket = (config: SocketConfig) => {
 
 		const msgId = node.attrs.id
 
-		const result = await promiseTimeout<any>(timeoutMs, async (resolve, reject) => {
-			const result = await waitForMessage(msgId, timeoutMs).catch(reject)
-			sendNode(node)
-				.then(() => resolve(result))
-				.catch(reject)
-		})
+		const [result] = await Promise.all([waitForMessage(msgId, timeoutMs), sendNode(node)])
 
-		if (result && 'tag' in result) {
+
+		if ('tag' in result) {
 			assertNodeErrorFree(result)
 		}
 
