@@ -2,15 +2,18 @@ import { Boom } from '@hapi/boom'
 import { randomBytes } from 'crypto'
 import { URL } from 'url'
 import { promisify } from 'util'
-import { proto } from '../../WAProto'
+import { proto } from '../../WAProto/index.js'
 import {
 	DEF_CALLBACK_PREFIX,
 	DEF_TAG_PREFIX,
 	INITIAL_PREKEY_COUNT,
 	MIN_PREKEY_COUNT,
-	NOISE_WA_HEADER
+	MIN_UPLOAD_INTERVAL,
+	NOISE_WA_HEADER,
+	UPLOAD_TIMEOUT
 } from '../Defaults'
-import { DisconnectReason, SocketConfig } from '../Types'
+import type { SocketConfig } from '../Types'
+import { DisconnectReason } from '../Types'
 import {
 	addTransactionCapability,
 	aesEncryptCTR,
@@ -32,7 +35,7 @@ import {
 } from '../Utils'
 import {
 	assertNodeErrorFree,
-	BinaryNode,
+	type BinaryNode,
 	binaryNodeToString,
 	encodeBinaryNode,
 	getBinaryNodeChild,
@@ -40,8 +43,8 @@ import {
 	jidEncode,
 	S_WHATSAPP_NET
 } from '../WABinary'
-import { WebSocketClient } from './Client'
 import { USyncQuery, USyncUser } from '../WAUSync/'
+import { WebSocketClient } from './Client'
 
 /**
  * Connects to WA servers and performs:
@@ -65,6 +68,9 @@ export const makeSocket = (config: SocketConfig) => {
 		makeSignalRepository
 	} = config
 
+	const uqTagId = generateMdTagPrefix()
+	const generateMessageTag = () => `${uqTagId}${epoch++}`
+
 	if (printQRInTerminal) {
 		console.warn(
 			'⚠️ The printQRInTerminal option has been deprecated. You will no longer receive QR codes in the terminal automatically. Please listen to the connection.update event yourself and handle the QR your way. You can remove this message by removing this opttion. This message will be removed in a future version.'
@@ -81,33 +87,74 @@ export const makeSocket = (config: SocketConfig) => {
 		url.searchParams.append('ED', authState.creds.routingInfo.toString('base64url'))
 	}
 
-	const ws = new WebSocketClient(url, config)
+	/**
+	 * Wait for a message with a certain tag to be received
+	 * @param msgId the message tag to await
+	 * @param timeoutMs timeout after which the promise will reject
+	 */
+	const waitForMessage = async <T>(msgId: string, timeoutMs = defaultQueryTimeoutMs) => {
+		let onRecv: ((data: T) => void) | undefined
+		let onErr: ((err: Error) => void) | undefined
+		try {
+			const result = await promiseTimeout<T>(timeoutMs, (resolve, reject) => {
+				onRecv = data => {
+					resolve(data)
+				}
 
-	ws.connect()
+				onErr = err => {
+					reject(
+						err ||
+						new Boom('Connection Closed', {
+							statusCode: DisconnectReason.connectionClosed
+						})
+					)
+				}
 
-	const ev = makeEventBuffer(logger)
-	/** ephemeral key pair used to encrypt/decrypt communication. Unique for each connection */
-	const ephemeralKeyPair = Curve.generateKeyPair()
-	/** WA noise protocol wrapper */
-	const noise = makeNoiseHandler({
-		keyPair: ephemeralKeyPair,
-		NOISE_HEADER: NOISE_WA_HEADER,
-		logger,
-		routingInfo: authState?.creds?.routingInfo
-	})
+				ws.on(`TAG:${msgId}`, onRecv)
+				ws.on('close', onErr)
+				ws.on('error', onErr)
 
-	const { creds } = authState
-	// add transaction capability
-	const keys = addTransactionCapability(authState.keys, logger, transactionOpts)
+				return () => reject(new Boom('Query Cancelled'))
+			})
+			return result
+		} catch (error) {
+			// Catch timeout and return undefined instead of throwing
+			if (error instanceof Boom && error.output?.statusCode === DisconnectReason.timedOut) {
+				logger?.warn?.({ msgId }, 'timed out waiting for message')
+				return undefined
+			}
 
-	let lastDateRecv: Date
-	let epoch = 1
-	let keepAliveReq: NodeJS.Timeout
-	let qrTimer: NodeJS.Timeout
-	let closed = false
+			throw error
+		} finally {
+			if (onRecv) ws.off(`TAG:${msgId}`, onRecv)
+			if (onErr) {
+				ws.off('close', onErr)
+				ws.off('error', onErr)
+			}
+		}
+	}
 
-	const uqTagId = generateMdTagPrefix()
-	const generateMessageTag = () => `${uqTagId}${epoch++}`
+	/** send a query, and wait for its response. auto-generates message ID if not provided */
+	const query = async (node: BinaryNode, timeoutMs?: number) => {
+		if (!node.attrs.id) {
+			node.attrs.id = generateMessageTag()
+		}
+
+		const msgId = node.attrs.id
+
+		const result = await promiseTimeout<any>(timeoutMs, async (resolve, reject) => {
+			const result = await waitForMessage(msgId, timeoutMs).catch(reject)
+			sendNode(node)
+				.then(() => resolve(result))
+				.catch(reject)
+		})
+
+		if (result && 'tag' in result) {
+			assertNodeErrorFree(result)
+		}
+
+		return result
+	}
 
 	const executeUSyncQuery = async (usyncQuery: USyncQuery) => {
 		if (usyncQuery.protocols.length === 0) {
@@ -183,7 +230,31 @@ export const makeSocket = (config: SocketConfig) => {
 		}
 	}
 
+	const ws = new WebSocketClient(url, config)
+
+	ws.connect()
+
+	const ev = makeEventBuffer(logger)
+	/** ephemeral key pair used to encrypt/decrypt communication. Unique for each connection */
+	const ephemeralKeyPair = Curve.generateKeyPair()
+	/** WA noise protocol wrapper */
+	const noise = makeNoiseHandler({
+		keyPair: ephemeralKeyPair,
+		NOISE_HEADER: NOISE_WA_HEADER,
+		logger,
+		routingInfo: authState?.creds?.routingInfo
+	})
+
+	const { creds } = authState
+	// add transaction capability
+	const keys = addTransactionCapability(authState.keys, logger, transactionOpts)
 	const signalRepository = makeSignalRepository({ creds, keys }, onWhatsApp)
+
+	let lastDateRecv: Date
+	let epoch = 1
+	let keepAliveReq: NodeJS.Timeout
+	let qrTimer: NodeJS.Timeout
+	let closed = false
 
 	const sendPromise = promisify(ws.send)
 	/** send a raw buffer */
@@ -248,57 +319,12 @@ export const makeSocket = (config: SocketConfig) => {
 		return result
 	}
 
-	/**
-	 * Wait for a message with a certain tag to be received
-	 * @param msgId the message tag to await
-	 * @param timeoutMs timeout after which the promise will reject
-	 */
-	const waitForMessage = async <T>(msgId: string, timeoutMs = defaultQueryTimeoutMs) => {
-		let onRecv: (json) => void
-		let onErr: (err) => void
-		try {
-			const result = await promiseTimeout<T>(timeoutMs, (resolve, reject) => {
-				onRecv = resolve
-				onErr = err => {
-					reject(err || new Boom('Connection Closed', { statusCode: DisconnectReason.connectionClosed }))
-				}
-
-				ws.on(`TAG:${msgId}`, onRecv)
-				ws.on('close', onErr) // if the socket closes, you'll never receive the message
-				ws.off('error', onErr)
-			})
-
-			return result as any
-		} finally {
-			ws.off(`TAG:${msgId}`, onRecv!)
-			ws.off('close', onErr!) // if the socket closes, you'll never receive the message
-			ws.off('error', onErr!)
-		}
-	}
-
-	/** send a query, and wait for its response. auto-generates message ID if not provided */
-	const query = async (node: BinaryNode, timeoutMs?: number) => {
-		if (!node.attrs.id) {
-			node.attrs.id = generateMessageTag()
-		}
-
-		const msgId = node.attrs.id
-
-		const [result] = await Promise.all([waitForMessage(msgId, timeoutMs), sendNode(node)])
-
-		if ('tag' in result) {
-			assertNodeErrorFree(result)
-		}
-
-		return result
-	}
-
 	/** connection handshake */
 	const validateConnection = async () => {
 		let helloMsg: proto.IHandshakeMessage = {
 			clientHello: { ephemeral: ephemeralKeyPair.public }
 		}
-		helloMsg = proto.HandshakeMessage.fromObject(helloMsg)
+		helloMsg = proto.HandshakeMessage.create(helloMsg)
 
 		logger.info({ browser, helloMsg }, 'connected to WA')
 
@@ -344,28 +370,116 @@ export const makeSocket = (config: SocketConfig) => {
 			},
 			content: [{ tag: 'count', attrs: {} }]
 		})
-		const countChild = getBinaryNodeChild(result, 'count')
-		return +countChild!.attrs.value
+		const countChild = getBinaryNodeChild(result, 'count')!
+		return +countChild.attrs.value!
 	}
 
+	// Pre-key upload state management
+	let uploadPreKeysPromise: Promise<void> | null = null
+	let lastUploadTime = 0
+
 	/** generates and uploads a set of pre-keys to the server */
-	const uploadPreKeys = async (count = INITIAL_PREKEY_COUNT) => {
-		await keys.transaction(async () => {
-			logger.info({ count }, 'uploading pre-keys')
-			const { update, node } = await getNextPreKeysNode({ creds, keys }, count)
+	const uploadPreKeys = async (count = INITIAL_PREKEY_COUNT, retryCount = 0) => {
+		// Check minimum interval (except for retries)
+		if (retryCount === 0) {
+			const timeSinceLastUpload = Date.now() - lastUploadTime
+			if (timeSinceLastUpload < MIN_UPLOAD_INTERVAL) {
+				logger.debug(`Skipping upload, only ${timeSinceLastUpload}ms since last upload`)
+				return
+			}
+		}
 
-			await query(node)
-			ev.emit('creds.update', update)
+		// Prevent multiple concurrent uploads
+		if (uploadPreKeysPromise) {
+			logger.debug('Pre-key upload already in progress, waiting for completion')
+			return uploadPreKeysPromise
+		}
 
-			logger.info({ count }, 'uploaded pre-keys')
-		}, authState.creds.me?.id || 'default')
+		const uploadLogic = async () => {
+			logger.info({ count, retryCount }, 'uploading pre-keys')
+
+			// Generate and save pre-keys atomically (prevents ID collisions on retry)
+			const node = await keys.transaction(async () => {
+				logger.debug({ requestedCount: count }, 'generating pre-keys with requested count')
+				const { update, node } = await getNextPreKeysNode({ creds, keys }, count)
+				// Update credentials immediately to prevent duplicate IDs on retry
+				ev.emit('creds.update', update)
+				return node // Only return node since update is already used
+			}, creds?.me?.id || 'upload-pre-keys')
+
+			// Upload to server (outside transaction, can fail without affecting local keys)
+			try {
+				await query(node)
+				logger.info({ count }, 'uploaded pre-keys successfully')
+				lastUploadTime = Date.now()
+			} catch (uploadError) {
+				logger.error({ uploadError, count }, 'Failed to upload pre-keys to server')
+
+				// Exponential backoff retry (max 3 retries)
+				if (retryCount < 3) {
+					const backoffDelay = Math.min(1000 * Math.pow(2, retryCount), 10000)
+					logger.info(`Retrying pre-key upload in ${backoffDelay}ms`)
+					await new Promise(resolve => setTimeout(resolve, backoffDelay))
+					return uploadPreKeys(count, retryCount + 1)
+				}
+
+				throw uploadError
+			}
+		}
+
+		// Add timeout protection
+		uploadPreKeysPromise = Promise.race([
+			uploadLogic(),
+			new Promise<void>((_, reject) =>
+				setTimeout(() => reject(new Boom('Pre-key upload timeout', { statusCode: 408 })), UPLOAD_TIMEOUT)
+			)
+		])
+
+		try {
+			await uploadPreKeysPromise
+		} finally {
+			uploadPreKeysPromise = null
+		}
+	}
+
+	const verifyCurrentPreKeyExists = async () => {
+		const currentPreKeyId = creds.nextPreKeyId - 1
+		if (currentPreKeyId <= 0) {
+			return { exists: false, currentPreKeyId: 0 }
+		}
+
+		const preKeys = await keys.get('pre-key', [currentPreKeyId.toString()])
+		const exists = !!preKeys[currentPreKeyId.toString()]
+
+		return { exists, currentPreKeyId }
 	}
 
 	const uploadPreKeysToServerIfRequired = async () => {
-		const preKeyCount = await getAvailablePreKeysOnServer()
-		logger.info(`${preKeyCount} pre-keys found on server`)
-		if (preKeyCount <= MIN_PREKEY_COUNT) {
-			await uploadPreKeys()
+		try {
+			const preKeyCount = await getAvailablePreKeysOnServer()
+			const { exists: currentPreKeyExists, currentPreKeyId } = await verifyCurrentPreKeyExists()
+
+			logger.info(`${preKeyCount} pre-keys found on server`)
+			logger.info(`Current prekey ID: ${currentPreKeyId}, exists in storage: ${currentPreKeyExists}`)
+
+			const lowServerCount = preKeyCount <= MIN_PREKEY_COUNT
+			const missingCurrentPreKey = !currentPreKeyExists && currentPreKeyId > 0
+
+			const shouldUpload = lowServerCount || missingCurrentPreKey
+
+			if (shouldUpload) {
+				const reasons: string[] = []
+				if (lowServerCount) reasons.push(`server count low (${preKeyCount})`)
+				if (missingCurrentPreKey) reasons.push(`current prekey ${currentPreKeyId} missing from storage`)
+
+				logger.info(`Uploading PreKeys due to: ${reasons.join(', ')}`)
+				await uploadPreKeys()
+			} else {
+				logger.info(`PreKey validation passed - Server: ${preKeyCount}, Current prekey ${currentPreKeyId} exists`)
+			}
+		} catch (error) {
+			logger.error({ error }, 'Failed to check/upload pre-keys during initialization')
+			// Don't throw - allow connection to continue even if pre-key check fails
 		}
 	}
 
@@ -421,7 +535,6 @@ export const makeSocket = (config: SocketConfig) => {
 		clearTimeout(qrTimer)
 
 		ws.removeAllListeners('close')
-		ws.removeAllListeners('error')
 		ws.removeAllListeners('open')
 		ws.removeAllListeners('message')
 
@@ -563,7 +676,7 @@ export const makeSocket = (config: SocketConfig) => {
 					attrs: {
 						jid: authState.creds.me.id,
 						stage: 'companion_hello',
-						// eslint-disable-next-line camelcase
+
 						should_show_push_notification: 'true'
 					},
 					content: [
@@ -630,7 +743,7 @@ export const makeSocket = (config: SocketConfig) => {
 	ws.on('open', async () => {
 		try {
 			await validateConnection()
-		} catch (err) {
+		} catch (err: any) {
 			logger.error({ err }, 'error in validating connection')
 			end(err)
 		}
@@ -648,7 +761,7 @@ export const makeSocket = (config: SocketConfig) => {
 			attrs: {
 				to: S_WHATSAPP_NET,
 				type: 'result',
-				id: stanza.attrs.id
+				id: stanza.attrs.id!
 			}
 		}
 		await sendNode(iq)
@@ -698,15 +811,19 @@ export const makeSocket = (config: SocketConfig) => {
 			ev.emit('connection.update', { isNewLogin: true, qr: undefined })
 
 			await sendNode(reply)
-		} catch (error) {
+		} catch (error: any) {
 			logger.info({ trace: error.stack }, 'error in pairing')
 			end(error)
 		}
 	})
 	// login complete
 	ws.on('CB:success', async (node: BinaryNode) => {
-		await uploadPreKeysToServerIfRequired()
-		await sendPassiveIq('active')
+		try {
+			await uploadPreKeysToServerIfRequired()
+			await sendPassiveIq('active')
+		} catch (err) {
+			logger.warn({ err }, 'failed to send initial passive iq')
+		}
 
 		logger.info('opened connection to WA')
 		clearTimeout(qrTimer) // will never happen in all likelyhood -- but just in case WA sends success on first try

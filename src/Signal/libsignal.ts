@@ -1,12 +1,14 @@
+/* @ts-ignore */
 import * as libsignal from 'libsignal'
+/* @ts-ignore */
 import { LRUCache } from 'lru-cache'
-import { SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
-import { SignalRepository } from '../Types/Signal'
+import type { SignalAuthState, SignalKeyStoreWithTransaction } from '../Types'
+import type { SignalRepository } from '../Types'
 import { generateSignalPubKey } from '../Utils'
 import { jidDecode } from '../WABinary'
 import type { SenderKeyStore } from './Group/group_cipher'
-import { SenderKeyName } from './Group/sender-key-name'
-import { SenderKeyRecord } from './Group/sender-key-record'
+import { SenderKeyName } from './Group'
+import { SenderKeyRecord } from './Group'
 import { GroupCipher, GroupSessionBuilder, SenderKeyDistributionMessage } from './Group'
 import { LIDMappingStore } from './lid-mapping'
 
@@ -14,15 +16,30 @@ export function makeLibSignalRepository(
 	auth: SignalAuthState,
 	onWhatsAppFunc?: (...jids: string[]) => Promise<
 		| {
-				jid: string
-				exists: boolean
-				lid: string
-		  }[]
+		jid: string
+		exists: boolean
+		lid: string
+	}[]
 		| undefined
 	>
 ): SignalRepository {
 	const lidMapping = new LIDMappingStore(auth.keys as SignalKeyStoreWithTransaction, onWhatsAppFunc)
 	const storage = signalStorage(auth, lidMapping)
+
+	const parsedKeys = auth.keys as SignalKeyStoreWithTransaction
+
+	function isLikelySyncMessage(addr: any): boolean {
+		const key = addr.toString()
+
+		// Only bypass for WhatsApp system addresses, not regular user contacts
+		// Be very specific about sync service patterns
+		return (
+			key.includes('@lid.whatsapp.net') || // WhatsApp system messages
+			key.includes('@broadcast') || // Broadcast messages
+			key.includes('@newsletter')
+		)
+	}
+
 	// Simple operation-level deduplication (5 minutes)
 	const recentMigrations = new LRUCache<string, boolean>({
 		ttl: 30 * 60 * 1000,
@@ -36,11 +53,10 @@ export function makeLibSignalRepository(
 			const cipher = new GroupCipher(storage, senderName)
 
 			// Use transaction to ensure atomicity
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			return parsedKeys.transaction(async () => {
 				return cipher.decrypt(msg)
-			}, auth.creds.me?.id || 'default')
+			}, group)
 		},
-
 		async processSenderKeyDistributionMessage({ item, authorJid }) {
 			const builder = new GroupSessionBuilder(storage)
 			if (!item.groupId) {
@@ -57,22 +73,25 @@ export function makeLibSignalRepository(
 				item.axolotlSenderKeyDistributionMessage
 			)
 			const senderNameStr = senderName.toString()
+			const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
+			if (!senderKey) {
+				await storage.storeSenderKey(senderName, new SenderKeyRecord())
+			}
 
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			return parsedKeys.transaction(async () => {
 				const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
 				if (!senderKey) {
 					await storage.storeSenderKey(senderName, new SenderKeyRecord())
 				}
 
 				await builder.process(senderName, senderMsg)
-			}, auth.creds.me?.id || 'default')
+			}, item.groupId)
 		},
 		async decryptMessage({ jid, type, ciphertext }) {
 			const addr = jidToSignalProtocolAddress(jid)
 			const session = new libsignal.SessionCipher(storage, addr)
 
-			// Use transaction to ensure atomicityAdd commentMore actions
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			async function doDecrypt() {
 				let result: Buffer
 				switch (type) {
 					case 'pkmsg':
@@ -84,8 +103,21 @@ export function makeLibSignalRepository(
 				}
 
 				return result
-			}, auth.creds.me?.id || 'default')
+			}
+
+			if (isLikelySyncMessage(addr)) {
+				// If it's a sync message, we can skip the transaction
+				// as it is likely to be a system message that doesn't require strict atomicity
+				return await doDecrypt()
+			}
+
+			// If it's not a sync message, we need to ensure atomicity
+			// For regular messages, we use a transaction to ensure atomicity
+			return parsedKeys.transaction(async () => {
+				return await doDecrypt()
+			}, jid)
 		},
+
 		async encryptMessage({ jid, data }) {
 			// LID SINGLE SOURCE OF TRUTH: Always prefer LID when available
 			let encryptionJid = jid
@@ -117,12 +149,12 @@ export function makeLibSignalRepository(
 			const addr = jidToSignalProtocolAddress(encryptionJid)
 			const cipher = new libsignal.SessionCipher(storage, addr)
 
-			// Use transaction to ensure atomicityAdd commentMore actions
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			// Use transaction to ensure atomicity
+			return parsedKeys.transaction(async () => {
 				const { type: sigType, body } = await cipher.encrypt(data)
 				const type = sigType === 3 ? 'pkmsg' : 'msg'
 				return { type, ciphertext: Buffer.from(body, 'binary') }
-			}, auth.creds.me?.id || 'default')
+			}, jid)
 		},
 		async encryptGroupMessage({ group, meId, data }) {
 			const senderName = jidToSignalSenderKeyName(group, meId)
@@ -130,8 +162,7 @@ export function makeLibSignalRepository(
 
 			const senderNameStr = senderName.toString()
 
-			// Use transaction to ensure atomicity
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			return parsedKeys.transaction(async () => {
 				const { [senderNameStr]: senderKey } = await auth.keys.get('sender-key', [senderNameStr])
 				if (!senderKey) {
 					await storage.storeSenderKey(senderName, new SenderKeyRecord())
@@ -145,25 +176,26 @@ export function makeLibSignalRepository(
 					ciphertext,
 					senderKeyDistributionMessage: senderKeyDistributionMessage.serialize()
 				}
-			}, auth.creds.me?.id || 'default')
+			}, group)
 		},
 		async injectE2ESession({ jid, session }) {
 			const cipher = new libsignal.SessionBuilder(storage, jidToSignalProtocolAddress(jid))
-
-			// Use transaction to ensure atomicity
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			return parsedKeys.transaction(async () => {
 				await cipher.initOutgoing(session)
-			}, auth.creds.me?.id || 'default')
+			}, jid)
 		},
 		jidToSignalProtocolAddress(jid) {
 			return jidToSignalProtocolAddress(jid).toString()
 		},
+
 		async storeLIDPNMapping(lid: string, pn: string) {
 			await lidMapping.storeLIDPNMapping(lid, pn)
 		},
+
 		getLIDMappingStore() {
 			return lidMapping
 		},
+
 		async validateSession(jid: string) {
 			try {
 				const addr = jidToSignalProtocolAddress(jid)
@@ -186,9 +218,9 @@ export function makeLibSignalRepository(
 		async deleteSession(jid: string) {
 			const addr = jidToSignalProtocolAddress(jid)
 
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			return parsedKeys.transaction(async () => {
 				await auth.keys.set({ session: { [addr.toString()]: null } })
-			}, auth.creds.me?.id || 'default')
+			}, jid)
 		},
 
 		async migrateSession(fromJid: string, toJid: string) {
@@ -217,7 +249,7 @@ export function makeLibSignalRepository(
 				return
 			}
 
-			return (auth.keys as SignalKeyStoreWithTransaction).transaction(async () => {
+			return parsedKeys.transaction(async () => {
 				// Store mapping
 				await lidMapping.storeLIDPNMapping(toJid, fromJid)
 
@@ -238,7 +270,7 @@ export function makeLibSignalRepository(
 				}
 
 				recentMigrations.set(migrationKey, true)
-			}, auth.creds.me?.id || 'default')
+			}, fromJid)
 		},
 
 		async encryptMessageWithWire({ encryptionJid, wireJid, data }) {
@@ -255,8 +287,14 @@ export function makeLibSignalRepository(
 }
 
 const jidToSignalProtocolAddress = (jid: string) => {
-	const { user, device } = jidDecode(jid)!
-	return new libsignal.ProtocolAddress(user, device || 0)
+	const decoded = jidDecode(jid)!
+	const { user, device, server } = decoded
+
+	// LID addresses get _1 suffix for Signal protocol
+	const signalUser = server === 'lid' ? `${user}_1` : user
+	const finalDevice = device || 0
+
+	return new libsignal.ProtocolAddress(signalUser, finalDevice)
 }
 
 const jidToSignalSenderKeyName = (group: string, user: string): SenderKeyName => {
@@ -303,7 +341,8 @@ function signalStorage(
 
 			return null
 		},
-		storeSession: async (id: string, session: libsignal.SessionRecord) => {
+		// TODO: Replace with libsignal.SessionRecord when type exports are added to libsignal
+		storeSession: async (id: string, session: any) => {
 			await keys.set({ session: { [id]: session.serialize() } })
 		},
 		isTrustedIdentity: () => {
