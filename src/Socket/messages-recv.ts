@@ -1111,7 +1111,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		// TODO: temporary fix for crashes and issues resulting of failed msmsg decryption
 		if (encNode && encNode.attrs.type === 'msmsg') {
 			logger.debug({ key: node.attrs.key }, 'ignored msmsg')
-			await sendMessageAck(node)
+			await sendMessageAck(node, NACK_REASONS.MissingMessageSecret)
 			return
 		}
 
@@ -1192,7 +1192,7 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 							const errorMessage = msg?.messageStubParameters?.[0] || ''
 							const isPreKeyError = errorMessage.includes('PreKey')
 
-							console.debug(`[handleMessage] Attempting retry request for failed decryption`)
+							logger.debug(`[handleMessage] Attempting retry request for failed decryption`)
 
 							// Handle both pre-key and normal retries in single mutex
 							retryMutex.mutex(async () => {
