@@ -480,7 +480,7 @@ export const makeSocket = (config: SocketConfig) => {
 			const shouldUpload = lowServerCount || missingCurrentPreKey
 
 			if (shouldUpload) {
-				const reasons = []
+				const reasons: string[] = []
 				if (lowServerCount) reasons.push(`server count low (${preKeyCount})`)
 				if (missingCurrentPreKey) reasons.push(`current prekey ${currentPreKeyId} missing from storage`)
 
