@@ -315,7 +315,7 @@ export async function convertToJpeg(imageBuffer: Buffer): Promise<Buffer> {
 		return jpegBuffer;
 	} catch (error) {
 		// If conversion fails, return the original buffer
-		logger.warn('Error converting image to JPEG', { error });
+		logger.warn({ error }, 'Error converting image to JPEG');
 		return imageBuffer;
 	}
 }
