@@ -159,7 +159,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 				return () => reject(new Boom('Query Cancelled'))
 			})
-			return result
+			return result as any
 		} catch (error) {
 			// Catch timeout and return undefined instead of throwing
 			if (error instanceof Boom && error.output?.statusCode === DisconnectReason.timedOut) {
@@ -187,9 +187,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		let [result] = await Promise.all([waitForMessage(msgId, timeoutMs), sendNode(node)])
 
-		// @ts-ignore
-		if (result && 'tag' in result) {
-			// @ts-ignore
+		if (result && 'tag' in result as any) {
 			assertNodeErrorFree(result)
 		}
 
