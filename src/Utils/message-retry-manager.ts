@@ -7,7 +7,7 @@ const RECENT_MESSAGES_SIZE = 512
 
 /** Timeout for session recreation - 1 hour */
 const RECREATE_SESSION_TIMEOUT = 60 * 60 * 1000 // 1 hour in milliseconds
-const PHONE_REQUEST_DELAY = 3000
+const PHONE_REQUEST_DELAY = 1000
 export interface RecentMessageKey {
 	to: string
 	id: string
