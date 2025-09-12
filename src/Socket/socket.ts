@@ -135,7 +135,7 @@ export const makeSocket = (config: SocketConfig) => {
 	 * @param msgId the message tag to await
 	 * @param timeoutMs timeout after which the promise will reject
 	 */
-	const waitForMessage = async <T>(msgId: string, timeoutMs = defaultQueryTimeoutMs) => {
+	const waitForMessage = async <T>(msgId: string, timeoutMs = defaultQueryTimeoutMs) :Promise<any> => {
 		let onRecv: ((data: T) => void) | undefined
 		let onErr: ((err: Error) => void) | undefined
 		try {
@@ -185,12 +185,7 @@ export const makeSocket = (config: SocketConfig) => {
 
 		const msgId = node.attrs.id
 
-		const result = await promiseTimeout<any>(timeoutMs, async (resolve, reject) => {
-			const result = waitForMessage(msgId, timeoutMs).catch(reject)
-			sendNode(node)
-				.then(async () => resolve(await result))
-				.catch(reject)
-		})
+		let [result] = await Promise.all([waitForMessage(msgId, timeoutMs), sendNode(node)])
 
 		if (result && 'tag' in result) {
 			assertNodeErrorFree(result)
