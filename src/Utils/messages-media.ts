@@ -26,7 +26,8 @@ import type {
 import { type BinaryNode, getBinaryNodeChild, getBinaryNodeChildBuffer, jidNormalizedUser } from '../WABinary'
 import { aesDecryptGCM, aesEncryptGCM, hkdf } from './crypto'
 import { generateMessageIDV2 } from './generics'
-import type { ILogger } from './logger'
+import logger, { type ILogger } from './logger'
+import sharp from "sharp";
 
 const getTmpFilesDirectory = () => tmpdir()
 
@@ -300,6 +301,25 @@ export const toBuffer = async (stream: Readable) => {
 	return Buffer.concat(chunks)
 }
 
+export async function convertToJpeg(imageBuffer: Buffer): Promise<Buffer> {
+	try {
+		// Use Sharp to convert the image to JPEG format
+		const jpegBuffer = await sharp(imageBuffer)
+			.jpeg({
+				quality: 90, // High quality JPEG (1-100)
+				progressive: true, // Progressive JPEG for better web loading
+				mozjpeg: true, // Use mozjpeg encoder for better compression
+			})
+			.toBuffer();
+
+		return jpegBuffer;
+	} catch (error) {
+		// If conversion fails, return the original buffer
+		logger.warn('Error converting image to JPEG', { error });
+		return imageBuffer;
+	}
+}
+
 export const getStream = async (item: WAMediaUpload, opts?: AxiosRequestConfig) => {
 	if (Buffer.isBuffer(item)) {
 		return { stream: toReadable(item), type: 'buffer' } as const
@@ -313,13 +333,35 @@ export const getStream = async (item: WAMediaUpload, opts?: AxiosRequestConfig) 
 
 	if (urlStr.startsWith('data:')) {
 		const buffer = Buffer.from(urlStr.split(',')[1]!, 'base64')
+
+		if (urlStr.startsWith('data:image/png')) {
+			const converted = await convertToJpeg(buffer)
+			return { stream: toReadable(converted), type: 'buffer' } as const
+		}
+
 		return { stream: toReadable(buffer), type: 'buffer' } as const
 	}
 
 	if (urlStr.startsWith('http://') || urlStr.startsWith('https://')) {
+
+		if (urlStr.match(/\.png($|\?)/i)) {
+			const stream = await getHttpStream(item.url, opts)
+			const buffer = await toBuffer(stream)
+			const converted = await convertToJpeg(buffer)
+			return { stream: toReadable(converted), type: 'buffer' } as const
+		}
+
 		return { stream: await getHttpStream(item.url, opts), type: 'remote' } as const
 	}
 
+	// if png file convert to jpeg
+	if (urlStr.match(/\.png($|\?)/i)) {
+		const buffer = await fs.readFile(item.url)
+		const converted = await convertToJpeg(buffer)
+		return { stream: toReadable(converted), type: 'buffer' } as const
+	}
+
+	// assume it's a file path
 	return { stream: createReadStream(item.url), type: 'file' } as const
 }
 
