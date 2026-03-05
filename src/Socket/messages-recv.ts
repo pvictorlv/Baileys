@@ -1504,12 +1504,17 @@ export const makeMessagesRecvSocket = (config: SocketConfig) => {
 		identifier: string,
 		exec: (node: BinaryNode, offline: boolean) => Promise<T>
 	) => {
-		ev.buffer()
-		await execTask()
-		ev.flush()
+		// Only manage buffer if not already buffering (e.g. from the sync state machine)
+		// Otherwise we'd destroy the outer buffer on flush
+		const wasBuffering = ev.isBuffering()
+		if (!wasBuffering) {
+			ev.buffer()
+		}
 
-		function execTask() {
-			return exec(node, false).catch(err => onUnexpectedError(err, identifier))
+		await exec(node, false).catch(err => onUnexpectedError(err, identifier))
+
+		if (!wasBuffering) {
+			ev.flush()
 		}
 	}
 

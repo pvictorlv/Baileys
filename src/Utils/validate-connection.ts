@@ -68,7 +68,7 @@ export const generateLoginNode = (userJid: string, config: SocketConfig): proto.
 	const payload: proto.IClientPayload = {
 		...getClientPayload(config),
 		passive: true,
-		pull: true,
+		pull: false,
 		username: +user,
 		device: device,
 		// TODO: investigate (hard set as false atm)

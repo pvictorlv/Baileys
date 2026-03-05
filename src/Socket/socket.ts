@@ -992,7 +992,7 @@ export const makeSocket = (config: SocketConfig) => {
 		await sendNode({
 			tag: 'ib',
 			attrs: {},
-			content: [{ tag: 'offline_batch', attrs: { count: '100' } }]
+			content: [{ tag: 'offline_batch', attrs: { count: '10000' } }]
 		})
 	})
 

@@ -1079,18 +1079,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 				PROCESSABLE_HISTORY_TYPES.includes(historyMsg.syncType! as proto.HistorySync.HistorySyncType)
 			: false
 
-		// State machine: decide on sync and flush
-		if (historyMsg && syncState === SyncState.AwaitingInitialSync) {
+		// State machine: handle history sync arriving in ANY non-Online state
+		// (including Connecting, before receivedPendingNotifications fires)
+		if (historyMsg && syncState !== SyncState.Online) {
 			if (awaitingSyncTimeout) {
 				clearTimeout(awaitingSyncTimeout)
 				awaitingSyncTimeout = undefined
 			}
 
 			if (shouldProcessHistoryMsg) {
-				syncState = SyncState.Syncing
-				logger.info('Transitioned to Syncing state')
-				// Let doAppStateSync handle the final flush after it's done
-			} else {
+				if (syncState !== SyncState.Syncing) {
+					syncState = SyncState.Syncing
+					logger.info('Transitioned to Syncing state')
+				}
+			} else if (syncState === SyncState.AwaitingInitialSync) {
 				syncState = SyncState.Online
 				logger.info('History sync skipped, transitioning to Online state and flushing buffer')
 				ev.flush()
@@ -1098,17 +1100,20 @@ export const makeChatsSocket = (config: SocketConfig) => {
 		}
 
 		const doAppStateSync = async () => {
-			if (syncState === SyncState.Syncing) {
-				logger.info('Doing app state sync')
+			// Use accountSyncCounter to determine if sync needed (like old version)
+			if (!authState.creds.accountSyncCounter) {
+				logger.info('Doing initial app state sync')
 				await resyncAppState(ALL_WA_PATCH_NAMES, true)
-
-				// Sync is complete, go online and flush everything
-				syncState = SyncState.Online
-				logger.info('App state sync complete, transitioning to Online state and flushing buffer')
-				ev.flush()
 
 				const accountSyncCounter = (authState.creds.accountSyncCounter || 0) + 1
 				ev.emit('creds.update', { accountSyncCounter })
+			}
+
+			// Transition to Online if still in a sync/waiting state
+			if (syncState !== SyncState.Online) {
+				syncState = SyncState.Online
+				logger.info('App state sync complete, transitioning to Online state and flushing buffer')
+				ev.flush()
 			}
 		}
 
@@ -1131,9 +1136,9 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			})
 		])
 
-		// If the app state key arrives and we are waiting to sync, trigger the sync now.
-		if (msg.message?.protocolMessage?.appStateSyncKeyShare && syncState === SyncState.Syncing) {
-			logger.info('App state sync key arrived, triggering app state sync')
+		// If the app state key arrives and we haven't synced yet, trigger the sync now.
+		if (msg.message?.protocolMessage?.appStateSyncKeyShare && !authState.creds.accountSyncCounter) {
+			logger.info('App state sync key arrived, triggering deferred app state sync')
 			await doAppStateSync()
 		}
 	})
@@ -1177,7 +1182,17 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			)
 		}
 
-		if (!receivedPendingNotifications || syncState !== SyncState.Connecting) {
+		if (!receivedPendingNotifications) {
+			return
+		}
+
+		// If sync already started or completed (e.g. history arrived as offline msg), don't go back
+		if (syncState !== SyncState.Connecting) {
+			logger.info({ syncState }, 'receivedPendingNotifications but sync already progressed, skipping AwaitingInitialSync')
+			if (syncState === SyncState.Online) {
+				ev.flush()
+			}
+
 			return
 		}
 
@@ -1198,7 +1213,7 @@ export const makeChatsSocket = (config: SocketConfig) => {
 			return
 		}
 
-		logger.info('History sync is enabled, awaiting notification with a 20s timeout.')
+		logger.info('History sync is enabled, awaiting notification with a 60s timeout.')
 
 		if (awaitingSyncTimeout) {
 			clearTimeout(awaitingSyncTimeout)
@@ -1206,12 +1221,11 @@ export const makeChatsSocket = (config: SocketConfig) => {
 
 		awaitingSyncTimeout = setTimeout(() => {
 			if (syncState === SyncState.AwaitingInitialSync) {
-				// TODO: investigate
 				logger.warn('Timeout in AwaitingInitialSync, forcing state to Online and flushing buffer')
 				syncState = SyncState.Online
 				ev.flush()
 			}
-		}, 20_000)
+		}, 60_000)
 	})
 
 	ev.on('lid-mapping.update', async ({ lid, pn }) => {
